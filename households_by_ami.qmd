@@ -106,11 +106,15 @@ acs_samples <- get_sample_info("usa") |>
 
 ```{r}
 #| vscode: {languageId: r}
-ipums_file <- "usa_00067.xml"
-if (file.exists(ipums_file)) {
+ipums_file <- "usa_00068.xml"
+file_loc <- paste0(
+  # "data/ipums_raw/", 
+  ipums_file)
+if (file.exists(file_loc)) {
   acs_00_23 <- read_ipums_ddi(ipums_file) |>
     read_ipums_micro()
 } else {
+  duckplyr::methods_overwrite()
   acs_00_23 <- define_extract_micro(
     collection = "usa",
     description = "ACS 1 year samples in Colorado of income variables, all samples since 2000",
@@ -122,6 +126,7 @@ if (file.exists(ipums_file)) {
       "NUMPREC",
       "CPI99",
       "OWNERSHP",
+      "OWNCOST",
       "HHTYPE",
       "HHINCOME",
       "INCTOT",
@@ -140,7 +145,8 @@ if (file.exists(ipums_file)) {
       "FAMSIZE",
       "NCHILD",
       "NCHLT5",
-      "FTOTINC"
+      "FTOTINC",
+      "BEDROOMS"
     )
   ) |>
     submit_extract() |>
@@ -212,8 +218,49 @@ acs_amis <- as_duckplyr_df(acs_00_23) |>
       right = FALSE,
       ordered_result = TRUE
     ),
-    ami_percentile = ceiling(pct_mfi*10) * 10
+    ami_percentile = ceiling(pct_mfi*100) / 100 ,
+    cost_burdened_30 = case_when(
+      OWNCOST*12/HHINCOME >= .3 ~ TRUE,
+      .default = FALSE),
+    cost_burdened_50 = case_when(
+      OWNCOST*12/HHINCOME >= .5 ~ TRUE,
+      .default = FALSE),
+      tenure = as_factor(OWNERSHP),
+      tenure_detail = as_factor(OWNERSHPD)
   )
+```
+
+
+```{r}
+#| vscode: {languageId: r}
+ami_percentile_by_year <- acs_amis |>
+  filter(PERNUM == 1 & GQ == 1 & HHINCOME != 9999999 & HHINCOME > 0 & !(YEAR %in% c(2020))) |>
+  summarize(total_hh = sum(HHWT), .by = c(YEAR, household_type_id, ami_percentile, age_group, cost_burdened_30, cost_burdened_50, OWNERSHP, OWNERSHPD)) |>
+  pivot_wider(names_from = YEAR, values_from = total_hh) |>
+  arrange(ami_percentile, household_type_id, age_group) |>
+  bind_rows(acs_mfi |>
+    select(YEAR = year, estimate) |>
+    pivot_wider(names_from = YEAR, values_from = estimate))
+```
+
+```{r}
+#| vscode: {languageId: r}
+write_csv(ami_percentile_by_year, "ami_percentile_by_year.csv")
+```
+
+```{r}
+#| vscode: {languageId: r}
+# create pivot friendly table for ami groups by year
+
+ami_percentile_by_year_pivot <- ami_percentile_by_year |>
+    pivot_longer(-c(ami_percentile, household_type_id, age_group), names_to = "year", values_to = "total_hh")
+
+write_csv(ami_percentile_by_year_pivot, "ami_percentile_by_year_pivot.csv")
+```
+
+```{r}
+#| vscode: {languageId: r}
+write_csv(acs_amis, "acs_amis.csv")
 ```
 
 ```{r}
@@ -242,38 +289,6 @@ ami_groups_by_year_pivot <- ami_groups_by_year |>
     pivot_longer(-c(ami_group, household_type_id, age_group), names_to = "year", values_to = "total_hh")
 
 write_csv(ami_groups_by_year_pivot, "ami_groups_by_year_pivot.csv")
-```
-
-```{r}
-#| vscode: {languageId: r}
-write_csv(acs_amis, "acs_amis.csv")
-```
-
-```{r}
-#| vscode: {languageId: r}
-ami_percentile_by_year <- acs_amis |>
-  filter(PERNUM == 1 & GQ == 1 & HHINCOME != 9999999 & HHINCOME > 0 & !(YEAR %in% c(2020))) |>
-  summarize(total_hh = sum(HHWT), .by = c(YEAR, household_type_id, ami_percentile, age_group)) |>
-  pivot_wider(names_from = YEAR, values_from = total_hh) |>
-  arrange(ami_percentile, household_type_id, age_group) |>
-  bind_rows(acs_mfi |>
-    select(YEAR = year, estimate) |>
-    pivot_wider(names_from = YEAR, values_from = estimate))
-```
-
-```{r}
-#| vscode: {languageId: r}
-write_csv(ami_percentile_by_year, "ami_percentile_by_year.csv")
-```
-
-```{r}
-#| vscode: {languageId: r}
-# create pivot friendly table for ami groups by year
-
-ami_percentile_by_year_pivot <- ami_percentile_by_year |>
-    pivot_longer(-c(ami_percentile, household_type_id, age_group), names_to = "year", values_to = "total_hh")
-
-write_csv(ami_percentile_by_year_pivot, "ami_percentile_by_year_pivot.csv")
 ```
 
 ```{r}
