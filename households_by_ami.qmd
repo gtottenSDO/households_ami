@@ -47,7 +47,7 @@ The `get_acs` function is used to pull the data for each year, and the results a
 
 ```{r}
 #| vscode: {languageId: r}
-if (!file.exists("acs_mfi.rds")) {
+if (!file.exists("data/acs_mfi.rds")) {
   acs_mfi <- map(
     acs_years,
     ~ get_acs(
@@ -61,9 +61,10 @@ if (!file.exists("acs_mfi.rds")) {
   ) |>
     bind_rows()
 
-  write_rds(acs_mfi, "acs_mfi.rds")
+  write_rds(acs_mfi, "data/acs_mfi.rds")
 } else {
-  acs_mfi <- read_rds("acs_mfi.rds")
+  acs_mfi <- read_rds("data/acs_mfi.rds") |>
+    as_duckplyr_df()
 }
 ```
 
@@ -84,7 +85,8 @@ mfi_00_04 <- read_csv("MultiYearProfiles0402004.csv") |>
     GEOID = "08",
     variable = "B19113_001",
     year = as.integer(str_extract(year, "\\d{4}"))
-  )
+  ) |>
+as_duckplyr_df()
 #   |>
 # select(year = 'Year', mfi = 'Estimate') |>
 # mutate(year = as.numeric(year))
@@ -106,7 +108,7 @@ acs_samples <- get_sample_info("usa") |>
 
 ```{r}
 #| vscode: {languageId: r}
-ipums_file <- "usa_00068.xml"
+ipums_file <- "usa_00070.xml"
 file_loc <- paste0(
   # "data/ipums_raw/", 
   ipums_file)
@@ -127,6 +129,7 @@ if (file.exists(file_loc)) {
       "CPI99",
       "OWNERSHP",
       "OWNCOST",
+      "RENT",
       "HHTYPE",
       "HHINCOME",
       "INCTOT",
@@ -210,57 +213,58 @@ acs_amis <- as_duckplyr_df(acs_00_23) |>
         1, 
         Inf),
       labels = c(
-        "less than or equal to 30% of MFI", 
-        "30% to 50% of MFI", 
-        "50% to 80% of MFI", 
-        "80% to 99% of MFI", 
-        "100% MFI or greater"),
+        "0-30", 
+        "30-50", 
+        "50-80", 
+        "80-100", 
+        "100+"),
       right = FALSE,
       ordered_result = TRUE
     ),
-    ami_percentile = ceiling(pct_mfi*100) / 100 ,
+    ami_percentile = ceiling(pct_mfi*10) / 10,
+      tenure = as_factor(OWNERSHP),
+      tenure_detail = as_factor(OWNERSHPD),
+    housing_cost_pct = case_when(
+      OWNERSHP == 2 ~ RENT*12 / HHINCOME,
+      OWNERSHP == 1 ~ OWNCOST*12 / HHINCOME,
+      .default = NA_real_
+    ),
     cost_burdened_30 = case_when(
-      OWNCOST*12/HHINCOME >= .3 ~ TRUE,
+      housing_cost_pct >= .3 ~ TRUE,
       .default = FALSE),
     cost_burdened_50 = case_when(
-      OWNCOST*12/HHINCOME >= .5 ~ TRUE,
-      .default = FALSE),
-      tenure = as_factor(OWNERSHP),
-      tenure_detail = as_factor(OWNERSHPD)
+      housing_cost_pct >= .5 ~ TRUE,
+      .default = FALSE)
   )
 ```
-
 
 ```{r}
 #| vscode: {languageId: r}
 ami_percentile_by_year <- acs_amis |>
   filter(PERNUM == 1 & GQ == 1 & HHINCOME != 9999999 & HHINCOME > 0 & !(YEAR %in% c(2020))) |>
-  summarize(total_hh = sum(HHWT), .by = c(YEAR, household_type_id, ami_percentile, age_group, cost_burdened_30, cost_burdened_50, OWNERSHP, OWNERSHPD)) |>
-  pivot_wider(names_from = YEAR, values_from = total_hh) |>
-  arrange(ami_percentile, household_type_id, age_group) |>
-  bind_rows(acs_mfi |>
-    select(YEAR = year, estimate) |>
-    pivot_wider(names_from = YEAR, values_from = estimate))
+  summarize(
+    total_hh = sum(HHWT), 
+    .by = c(
+      YEAR, 
+      household_type_id, 
+      ami_group,
+      ami_percentile, 
+      age_group, 
+      cost_burdened_30, cost_burdened_50, 
+      tenure, tenure_detail, hhsize)) |>
+  arrange(YEAR, ami_percentile, household_type_id, age_group) |>
+  left_join(acs_mfi |>
+    select(YEAR = year, mfi=estimate))
 ```
 
 ```{r}
 #| vscode: {languageId: r}
-write_csv(ami_percentile_by_year, "ami_percentile_by_year.csv")
+write_csv(ami_percentile_by_year, "data/ami_percentile_by_year_long.csv")
 ```
 
 ```{r}
 #| vscode: {languageId: r}
-# create pivot friendly table for ami groups by year
-
-ami_percentile_by_year_pivot <- ami_percentile_by_year |>
-    pivot_longer(-c(ami_percentile, household_type_id, age_group), names_to = "year", values_to = "total_hh")
-
-write_csv(ami_percentile_by_year_pivot, "ami_percentile_by_year_pivot.csv")
-```
-
-```{r}
-#| vscode: {languageId: r}
-write_csv(acs_amis, "acs_amis.csv")
+write_csv(acs_amis, "data/acs_amis.csv")
 ```
 
 ```{r}
@@ -278,20 +282,6 @@ ami_groups_by_year <- acs_amis |>
 
 ```{r}
 #| vscode: {languageId: r}
-write_csv(ami_groups_by_year, "ami_groups_by_year.csv")
+write_csv(ami_groups_by_year, "data/ami_groups_by_year.csv")
 ```
 
-```{r}
-#| vscode: {languageId: r}
-# create pivot friendly table for ami groups by year
-
-ami_groups_by_year_pivot <- ami_groups_by_year |>
-    pivot_longer(-c(ami_group, household_type_id, age_group), names_to = "year", values_to = "total_hh")
-
-write_csv(ami_groups_by_year_pivot, "ami_groups_by_year_pivot.csv")
-```
-
-```{r}
-#| vscode: {languageId: r}
-write_csv(acs_amis, "acs_amis.csv")
-```
