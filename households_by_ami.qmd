@@ -158,65 +158,71 @@ The output of the IPUMS query is a data frame that includes a record for each ho
 ```{r}
 #| label: query_ipums
 
-ipums_file <- "usa_00074.xml"
-file_loc <- paste0(
-  "data/ipums_raw/", 
-  ipums_file)
-if (file.exists(file_loc)) {
-  acs_00_23 <- read_ipums_ddi(ipums_file) |>
-    read_ipums_micro()
+# Load the IPUMS data from RDS file if it exists
+if (file.exists("acs_00_23.rds")) {
+  acs_00_23 <- readRDS("acs_00_23.rds")
 } else {
-  duckplyr::methods_overwrite()
-  acs_extract <- define_extract_micro(
-    collection = "usa",
-    description = "ACS 1 year samples in Colorado of income variables, all samples since 2000",
-    samples = acs_samples,
-    variables = list(
-      var_spec("STATEFIP", case_selections = "08"),
-      "COUNTYFIP",
-      "PUMA",
-      "NUMPREC",
-      "CPI99",
-      "OWNERSHP",
-      "OWNCOST",
-      "RENT",
-      "RENTGRS",
-      "RELATE",
-      "RACE",
-      "SEX",
-      "HISPAN",
-      "BPL",
-      "CITIZEN",
-      "HHTYPE",
-      "HHINCOME",
-      "INCTOT",
-      "INCWAGE",
-      "INCBUS00",
-      "INCSS",
-      "INCWELFR",
-      "INCINVST",
-      "INCSUPP",
-      "INCOTHER",
-      "INCEARN",
-      "POVERTY",
-      "CBPOVERTY",
-      "AGE",
-      "FAMUNIT",
-      "FAMSIZE",
-      "NCHILD",
-      "NCHLT5",
-      "FTOTINC",
-      "BEDROOMS",
-      "MOVEDIN",
-      "REPWT"
-    )
-  ) |>
-    submit_extract() |>
-    wait_for_extract() |>
-    download_extract() |>
-    read_ipums_micro()
+  ipums_file <- "usa_00074.xml"
+  file_loc <- paste0(
+    "data/ipums_raw/",
+    ipums_file
+  )
+  if (file.exists(file_loc)) {
+    acs_00_23 <- read_ipums_ddi(ipums_file) |>
+      read_ipums_micro()
+  } else {
+    duckplyr::methods_overwrite()
+    acs_extract <- define_extract_micro(
+      collection = "usa",
+      description = "ACS 1 year samples in Colorado of income variables, all samples since 2000",
+      samples = acs_samples,
+      variables = list(
+        var_spec("STATEFIP", case_selections = "08"),
+        "COUNTYFIP",
+        "PUMA",
+        "NUMPREC",
+        "CPI99",
+        "OWNERSHP",
+        "OWNCOST",
+        "RENT",
+        "RENTGRS",
+        "RELATE",
+        "RACE",
+        "SEX",
+        "HISPAN",
+        "BPL",
+        "CITIZEN",
+        "HHTYPE",
+        "HHINCOME",
+        "INCTOT",
+        "INCWAGE",
+        "INCBUS00",
+        "INCSS",
+        "INCWELFR",
+        "INCINVST",
+        "INCSUPP",
+        "INCOTHER",
+        "INCEARN",
+        "POVERTY",
+        "CBPOVERTY",
+        "AGE",
+        "FAMUNIT",
+        "FAMSIZE",
+        "NCHILD",
+        "NCHLT5",
+        "FTOTINC",
+        "BEDROOMS",
+        "MOVEDIN",
+        "REPWT"
+      )
+    ) |>
+      submit_extract() |>
+      wait_for_extract() |>
+      download_extract() |>
+      read_ipums_micro()
+  }
+  write_rds(acs_00_23, "acs_00_23.rds", compress = "bz")
 }
-
 ```
 
 ### Modify IPUMS Data
