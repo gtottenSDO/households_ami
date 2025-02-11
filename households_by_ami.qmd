@@ -1,13 +1,20 @@
 ---
 title: Households by AMI
 bibliography: references.bib
+format:
+  html:
+   code-fold: true
+   code-summary: "Show the code"
+   code-tools: true
+   toc: true
+   output: false
 ---
 
 ## Statutory Requirements
 
 Per C.R.S. 24-32-3702(1)(b),
 
-> **(b)** No later than November 30, 2027, and every six years thereafter, the director shall conduct a statewide housing needs assessment that analyzes existing and future statewide housing needs. The director shall publish a report based on the statewide housing needs assessment and regional and local housing needs assessments accepted by the department pursuant to section 24-32-3703 (3) or 24-32-3704 (3) that identifies current housing stock and estimates the number and type of dwelling units needed to accommodate future housing needs of the state based on population change projections. The report shall categorize statewide housing needs by ***household size***; ***household type***, including *accessible*, *visitable*, *supportive*, ***affordable for-sale***, and ***affordable rental housing***; and ***household income levels***, including *extremely low-*, *very low-*, *low-*, *moderate-*, and *middle-income* households as designated by the United States department of housing and urban development.
+> **(b)** No later than November 30, 2027, and every six years thereafter, the director shall conduct a statewide housing needs assessment that analyzes existing and future statewide housing needs. The director shall publish a report based on the statewide housing needs assessment and regional and local housing needs assessments accepted by the department pursuant to section 24-32-3703 (3) or 24-32-3704 (3) that identifies current housing stock and estimates the number and type of dwelling units needed to accommodate future housing needs of the state based on population change projections. The report shall categorize statewide housing needs by ***household size***; ***household type***, including *accessible*, *visitable*, *supportive*, ***affordable for-sale***, and ***affordable rental housing***; and ***household income levels***, including *extremely low-*, *very low-*, *low-*, *moderate-*, and *middle-income* households as designated by the United States department of Housing and Urban Development ("HUD").
 
 In pursuing these requirements, we will begin by establishing a historic time series of housing data, including the number of housing units by type and income level, utilizing data from the Census Bureau's Public Use Microdata Sample (PUMS), and then forecast future marginal demand based on our projections of total households by type.
 
@@ -16,7 +23,7 @@ In pursuing these requirements, we will begin by establishing a historic time se
 This script is used to pull the number of households by AMI in Colorado using PUMS data via IPUMS using the `ipumsr` package. Median Family Incomes are collected separately as provided by HUD, using the `tidycensus` package.
 
 ```{r}
-#| vscode: {languageId: r}
+#| label: setup
 # NOTE: To load data, you must download both the extract's data and the DDI
 # and also set the working directory to the folder with these files (or change the path below).
 if (!require("ipumsr")) stop("Reading IPUMS data into R requires the ipumsr package. It can be installed using the following command: install.packages('ipumsr')")
@@ -37,7 +44,8 @@ hud_key <- Sys.getenv("HUD_API_KEY")
 We begin by using the `tidycensus` package to pull the median family income data from the ACS 1 year dataset for each year. This data is available from the ACS API for years 2005-2019 and 2021-2023. Year prior to 2005 are not accessible via the API, and are extracted separtely below. Year 2020 data was never released from the Census Bureau, and is therefore not included.
 
 ```{r}
-#| vscode: {languageId: r}
+#| label: acs_years
+
 acs_years <- c(2005:2019, 2021:2023)
 ```
 
@@ -46,7 +54,9 @@ acs_years <- c(2005:2019, 2021:2023)
 The `get_acs` function is used to pull the data for each year, and the results are combined into a single dataframe, `acs_mfi`. The data is saved to a file so that it does not need to be downloaded again.
 
 ```{r}
-#| vscode: {languageId: r}
+#| label: acs_mfi
+
+# check if file exists and read it if it does
 if (!file.exists("data/acs_mfi.rds")) {
   acs_mfi <- map(
     acs_years,
@@ -71,7 +81,8 @@ if (!file.exists("data/acs_mfi.rds")) {
 The remaining data was downloaded from the ACS FTP server and saved as `MultiYearProfiles0402004.csv`. The data is filtered based on the `Stub` "Median family income (dollars)" and the `Geographic Name` "Colorado". The data is then renamed as variable "B19113_001", in order to match the variable name used in the ACS API, and appended to the `acs_mfi` data frame, generated above.
 
 ```{r}
-#| vscode: {languageId: r}
+#| label: mfi_00_04
+
 mfi_00_04 <- read_csv("MultiYearProfiles0402004.csv") |>
   filter(Stub == "Median family income (dollars)" & `Geographic Name` == "Colorado") |>
   select(NAME = `Geographic Name`, contains("Estimate")) |>
@@ -94,30 +105,69 @@ as_duckplyr_df()
 
 ## Household Data (IPUMS)
 
-PUMS data is extracted using IPUMS USA data collection [@Ruggles2024]. The dataset and accompanying application have been created as a way of extracting and standardizing PUMS data for analysis.
+PUMS data is extracted using IPUMS USA data collection [@Ruggles2024]. The dataset and accompanying application have been created as a way of extracting and standardizing PUMS data for analysis. Data is extracted using the `ipumsr` package [@ipumsr].
+
+First we get a list of all ACS samples, and filter to those with the pattern `us20\d{2}a`. This pattern matches all ACS 1 year samples from 2000 to 2023, and are used to feed the query from IPUMS.
 
 ```{r}
-#| editable: true
-#| slideshow: {slide_type: ''}
-#| tags: []
-#| vscode: {languageId: r}
+#| label: ipums_samples
+
 acs_samples <- get_sample_info("usa") |>
   filter(str_detect(name, pattern = "us20\\d{2}a")) |>
   pull(name)
 ```
 
+Next an extract is created and processed. The following table includes relevant variables and their definitions:
+
+| Variable  | Description                                 |
+|-----------|---------------------------------------------|
+| STATEFIP  | State FIPS code                             |
+| COUNTYFIP | County FIPS code                            |
+| PUMA      | Public Use Microdata Area code              |
+| NUMPREC   | Number of people in the household           |
+| CPI99     | Consumer Price Index for 1999               |
+| OWNERSHP  | Ownership status of the housing unit        |
+| OWNCOST   | Value of owner-occupied housing units       |
+| RENT      | Gross rent                                  |
+| HHTYPE    | Household type                              |
+| HHINCOME  | Household income                            |
+| INCTOT    | Total income                                |
+| INCWAGE   | Wage or salary income                       |
+| INCBUS00  | Business, farm, and professional income     |
+| INCSS     | Social security income                      |
+| INCWELFR  | Welfare income                              |
+| INCINVST  | Investment income                           |
+| INCSUPP   | Supplemental security income                |
+| INCOTHER  | Other income                                |
+| INCEARN   | Earnings                                    |
+| POVERTY   | Poverty status                              |
+| CBPOVERTY | Child below poverty level                   |
+| AGE       | Age of the person                           |
+| FAMUNIT   | Family unit                                 |
+| FAMSIZE   | Family size                                 |
+| NCHILD    | Number of children in the household         |
+| NCHLT5    | Number of children under 5 years old        |
+| FTOTINC   | Total family income                         |
+| BEDROOMS  | Number of bedrooms                          |
+| REPWT     | Replicate weight (for statistical analysis) |
+
+: IPUMS Variables
+
+The output of the IPUMS query is a data frame that includes a record for each household in Colorado from the ACS 1-year samples since 2000. Each record represents a person, with the head of household identified as person 1, and all other persons in the household following. This is based on the `rectangular` record format from IPUMS, rather than `hierachal`, as the household records lack necessary data for the analysis, such as person ages, or number of children in the household.
+
 ```{r}
-#| vscode: {languageId: r}
-ipums_file <- "usa_00070.xml"
+#| label: query_ipums
+
+ipums_file <- "usa_00074.xml"
 file_loc <- paste0(
-  # "data/ipums_raw/", 
+  "data/ipums_raw/", 
   ipums_file)
 if (file.exists(file_loc)) {
   acs_00_23 <- read_ipums_ddi(ipums_file) |>
     read_ipums_micro()
 } else {
   duckplyr::methods_overwrite()
-  acs_00_23 <- define_extract_micro(
+  acs_extract <- define_extract_micro(
     collection = "usa",
     description = "ACS 1 year samples in Colorado of income variables, all samples since 2000",
     samples = acs_samples,
@@ -130,6 +180,13 @@ if (file.exists(file_loc)) {
       "OWNERSHP",
       "OWNCOST",
       "RENT",
+      "RENTGRS",
+      "RELATE",
+      "RACE",
+      "SEX",
+      "HISPAN",
+      "BPL",
+      "CITIZEN",
       "HHTYPE",
       "HHINCOME",
       "INCTOT",
@@ -149,7 +206,9 @@ if (file.exists(file_loc)) {
       "NCHILD",
       "NCHLT5",
       "FTOTINC",
-      "BEDROOMS"
+      "BEDROOMS",
+      "MOVEDIN",
+      "REPWT"
     )
   ) |>
     submit_extract() |>
@@ -157,10 +216,32 @@ if (file.exists(file_loc)) {
     download_extract() |>
     read_ipums_micro()
 }
+
 ```
 
+### Modify IPUMS Data
+
+Next a series of calculations are performed to modify the IPUMS data to be more useful for analysis. The following table includes the variables generated and their descriptions.
+
+| Variable Name | Description |
+|--------------------------------------|----------------------------------|
+| hhsize | Household size - equal, to the total number of person records, `NUMREC`) |
+| nadults | Number of adults in the household - total number of persons records - number of children (`NUMREC - NCHILD`) |
+| household_type_id | Household type - a factor variable with four levels: "One adult with no children", "One adult with children", "More than one adult with no children", "More than one adult with children" - based on characteristics of the household |
+| age_group | Age group - a factor variable with five levels: "Under 18", "18-24", "25-44", "45-64", "65 and over" - based on the age of the person |
+| hhadj | An adjustment factor to apply to household income based on the size of the household |
+| mfi_hh | Household median family income - household income adjusted for household size |
+| pct_mfi | Percent of median family income - household income divided by the median family income |
+| ami_group | Grouping of households by Median Family Income |
+| ami_percentile | Percent of median family income based on 10 percentile groups |
+| housing_cost_pct | Housing cost as a percentage of income |
+
+Of particular importance is the method for calculating percentage of median family income, which is based on the adjusted median family income as determined by household size. This is done by first applying an adjustment factor based on Median Family Income (based on HUD calculations), and then applying this adjustment factor to actual Median Family Income, to get a size adjusted MFI that household income can be compared to. Household income is then divided by this adjusted MFI to get the percentage of median family income, used for binning and grouping.
+
+Cost burdened status is taken by dividing housing costs by household income. Housing costs are based either on the `RENT`^[Note: the `RENT` variable provided by IPUMS represents monthly contract rents, which may or may not include utilities, based on ] variable for renter households, or the `OWNCOST` variable for owner households, and are assigned based on tenure of the household. Housing costs are each reported on a monthly basis, and so must be annualized by multiplying by 12, prior to dividing by household income.
 ```{r}
-#| vscode: {languageId: r}
+#| label: calc_amis
+
 acs_amis <- as_duckplyr_df(acs_00_23) |>
   left_join(
     acs_mfi |>
@@ -238,8 +319,12 @@ acs_amis <- as_duckplyr_df(acs_00_23) |>
   )
 ```
 
+## Calculate AMI percentiles by year
+
+Next we calculate the AMI percentiles by year. We do this by grouping the data by year, household type, AMI percentile, AMI group^[While this is duplicative with AMI percentiles it makes future analysis simpler], age group, cost burdened 30, cost burdened 50, tenure, tenure detail, and household size. We then calculate the total household weight for each group. We also join the median family income (MFI) for each year.
 ```{r}
-#| vscode: {languageId: r}
+#| label: calc_ami_percentiles_by_year
+
 ami_percentile_by_year <- acs_amis |>
   filter(PERNUM == 1 & GQ == 1 & HHINCOME != 9999999 & HHINCOME > 0 & !(YEAR %in% c(2020))) |>
   summarize(
@@ -257,31 +342,13 @@ ami_percentile_by_year <- acs_amis |>
     select(YEAR = year, mfi=estimate))
 ```
 
-```{r}
-#| vscode: {languageId: r}
-write_csv(ami_percentile_by_year, "data/ami_percentile_by_year_long.csv")
-```
+## Write CSVs
+
+Finally we write the CSVs to the data folder for the ACS AMIs and the AMI percentiles by year.
 
 ```{r}
-#| vscode: {languageId: r}
+#| label: write_csvs
+write_csv(ami_percentile_by_year, "data/ami_percentile_by_year_long.csv")
+
 write_csv(acs_amis, "data/acs_amis.csv")
 ```
-
-```{r}
-#| vscode: {languageId: r}
-ami_groups_by_year <- acs_amis |>
-  filter(PERNUM == 1 & GQ == 1 & HHINCOME != 9999999 & HHINCOME > 0 & !(YEAR %in% c(2020))) |>
-  summarize(total_hh = sum(HHWT), .by = c(YEAR, household_type_id, ami_group, age_group)) |>
-  pivot_wider(names_from = YEAR, values_from = total_hh) |>
-  arrange(ami_group, household_type_id, age_group) |>
-  bind_rows(acs_mfi |>
-    select(YEAR = year, estimate) |>
-    pivot_wider(names_from = YEAR, values_from = estimate) |>
-    mutate(ami_group = "median family income"))
-```
-
-```{r}
-#| vscode: {languageId: r}
-write_csv(ami_groups_by_year, "data/ami_groups_by_year.csv")
-```
-
