@@ -31,6 +31,8 @@ library(tidyverse)
 library(srvyr)
 library(tidycensus)
 library(duckplyr)
+library(duckdb)
+library(DBI)
 
 # get hud IL data
 library(hudr)
@@ -159,8 +161,9 @@ The output of the IPUMS query is a data frame that includes a record for each ho
 #| label: query_ipums
 
 # Load the IPUMS data from RDS file if it exists
-if (file.exists("acs_00_23.rds")) {
-  acs_00_23 <- readRDS("acs_00_23.rds")
+if (file.exists("data/acs_00_23.rds")) {
+  acs_00_23 <- readRDS("data/acs_00_23.rds") |> 
+    as_duckplyr_df()
 } else {
   ipums_file <- "usa_00074.xml"
   file_loc <- paste0(
@@ -168,7 +171,7 @@ if (file.exists("acs_00_23.rds")) {
     ipums_file
   )
   if (file.exists(file_loc)) {
-    acs_00_23 <- read_ipums_ddi(ipums_file) |>
+    acs_00_23 <- read_ipums_ddi(file_loc) |>
       read_ipums_micro()
   } else {
     duckplyr::methods_overwrite()
@@ -221,8 +224,18 @@ if (file.exists("acs_00_23.rds")) {
       download_extract() |>
       read_ipums_micro()
   }
-  write_rds(acs_00_23, "acs_00_23.rds", compress = "bz")
+  write_rds(acs_00_23, "data/acs_00_23.rds")
 }
+```
+
+```{r}
+duckconn <- dbConnect(duckdb::duckdb(), "data/acs_00_23.duckdb")
+
+# write acs_00_23 to duckdb database
+dbWriteTable(duckconn, "acs_00_23", acs_00_23, overwrite = TRUE)
+
+acs_00_23 <- tbl(duckconn, "acs_00_23") |> 
+  collect()
 ```
 
 ### Modify IPUMS Data
@@ -233,8 +246,8 @@ Next a series of calculations are performed to modify the IPUMS data to be more 
 |--------------------------------------|----------------------------------|
 | hhsize | Household size - equal, to the total number of person records, `NUMREC`) |
 | nadults | Number of adults in the household - total number of persons records - number of children (`NUMREC - NCHILD`) |
-| household_type_id | Household type - a factor variable with four levels: "One adult with no children", "One adult with children", "More than one adult with no children", "More than one adult with children" - based on characteristics of the household |
-| age_group | Age group - a factor variable with five levels: "Under 18", "18-24", "25-44", "45-64", "65 and over" - based on the age of the person |
+| household_type_id/household_type_description | Household type - a factor variable with four levels corresponding to each (id): "One adult with no children" (1), "One adult with children" (2), "More than one adult with no children" (3), "More than one adult with children" (4)- based on characteristics of the household |
+| age_group_id/age_group_description | Age group - a factor variable with five levels: "Under 18" (5), "18-24" (1), "25-44" (2), "45-64" (3), "65 and over" (4) - based on the age of the person. |
 | hhadj | An adjustment factor to apply to household income based on the size of the household |
 | mfi_hh | Household median family income - household income adjusted for household size |
 | pct_mfi | Percent of median family income - household income divided by the median family income |
@@ -244,26 +257,59 @@ Next a series of calculations are performed to modify the IPUMS data to be more 
 
 Of particular importance is the method for calculating percentage of median family income, which is based on the adjusted median family income as determined by household size. This is done by first applying an adjustment factor based on Median Family Income (based on HUD calculations), and then applying this adjustment factor to actual Median Family Income, to get a size adjusted MFI that household income can be compared to. Household income is then divided by this adjusted MFI to get the percentage of median family income, used for binning and grouping.
 
-Cost burdened status is taken by dividing housing costs by household income. Housing costs are based either on the `RENT`^[Note: the `RENT` variable provided by IPUMS represents monthly contract rents, which may or may not include utilities, based on ] variable for renter households, or the `OWNCOST` variable for owner households, and are assigned based on tenure of the household. Housing costs are each reported on a monthly basis, and so must be annualized by multiplying by 12, prior to dividing by household income.
+Cost burdened status is taken by dividing housing costs by household income. Housing costs are based either on the `RENT`[^1] variable for renter households, or the `OWNCOST` variable for owner households, and are assigned based on tenure of the household. Housing costs are each reported on a monthly basis, and so must be annualized by multiplying by 12, prior to dividing by household income.
+
+[^1]: Note: the `RENT` variable provided by IPUMS represents monthly contract rents, which may or may not include utilities, based on
+
 ```{r}
 #| label: calc_amis
 
-acs_amis <- as_duckplyr_df(acs_00_23) |>
+acs_amis <- acs_00_23 |>
   left_join(
     acs_mfi |>
       bind_rows(mfi_00_04) |>
       select("YEAR" = "year", mfi = estimate)
   ) |>
   mutate(
-    nadults = NUMPREC - NCHILD,
-    hhsize = NUMPREC,
+    nadults = sum(zap_labels(AGE) >= 18),
+    nchildren = sum(zap_labels(AGE) < 18),
+    check = NUMPREC - nadults - nchildren,
+    .by = c("YEAR", "SERIAL")) |> 
+  mutate(
+    hhsize = nadults + nchildren,
     household_type_id = factor(case_when(
+      nadults == 1 & NCHILD == 0 ~ "1",
+      nadults == 1 & NCHILD > 0 ~ "2",
+      nadults > 1 & NCHILD == 0 ~ "3",
+      nadults > 1 & NCHILD > 0 ~ "4"
+    )),
+    household_type_description = factor(case_when(
       nadults == 1 & NCHILD == 0 ~ "One adult with no children	",
       nadults == 1 & NCHILD > 0 ~ "One adult with children",
       nadults > 1 & NCHILD == 0 ~ "More than one adult with no children",
       nadults > 1 & NCHILD > 0 ~ "More than one adult with children"
     )),
-    age_group = cut(
+    age_group_id = cut(
+      AGE,
+      breaks = c(
+        0,
+        18,
+        25,
+        45,
+        65,
+        Inf
+      ),
+      labels = c(
+        "5",
+        "1",
+        "2",
+        "3",
+        "4"
+      ),
+      right = FALSE,
+      ordered_result = TRUE
+    ),
+    age_group_description = cut(
       AGE,
       breaks = c(
         0,
@@ -327,7 +373,10 @@ acs_amis <- as_duckplyr_df(acs_00_23) |>
 
 ## Calculate AMI percentiles by year
 
-Next we calculate the AMI percentiles by year. We do this by grouping the data by year, household type, AMI percentile, AMI group^[While this is duplicative with AMI percentiles it makes future analysis simpler], age group, cost burdened 30, cost burdened 50, tenure, tenure detail, and household size. We then calculate the total household weight for each group. We also join the median family income (MFI) for each year.
+Next we calculate the AMI percentiles by year. We do this by grouping the data by year, household type, AMI percentile, AMI group[^2], age group, cost burdened 30, cost burdened 50, tenure, tenure detail, and household size. We then calculate the total household weight for each group. We also join the median family income (MFI) for each year.
+
+[^2]: While this is duplicative with AMI percentiles it makes future analysis simpler
+
 ```{r}
 #| label: calc_ami_percentiles_by_year
 
@@ -338,14 +387,37 @@ ami_percentile_by_year <- acs_amis |>
     .by = c(
       YEAR, 
       household_type_id, 
+      household_type_description,
       ami_group,
       ami_percentile, 
-      age_group, 
+      age_group_id, 
+      age_group_description,
       cost_burdened_30, cost_burdened_50, 
       tenure, tenure_detail, hhsize)) |>
-  arrange(YEAR, ami_percentile, household_type_id, age_group) |>
+  arrange(YEAR, ami_percentile, household_type_id, age_group_id) |>
   left_join(acs_mfi |>
     select(YEAR = year, mfi=estimate))
+```
+
+## Convert data to Eviews friendly format
+
+The data is then converted to an eviews friendly format for forecsat analysis. This is done at a few different levels, with the most basic being by ami group and tenure, followed by ami group and tenure, and household type. Finally we look at ami group, tenure, household type, and age group.
+
+```{r}
+#| label: convert_to_eviews_format
+
+ami_percentile_by_year_eviews <- ami_percentile_by_year |> 
+  mutate(tenure = case_when(
+    str_detect(tenure, "Own") ~ "own",
+    str_detect(tenure, "Rent") ~ "rent",
+    .default = tenure
+  )) |> 
+  select(YEAR, ami_group, tenure, total_hh) |>  
+  pivot_wider(names_from = c(tenure, ami_group), 
+            values_from = total_hh,
+            values_fn = sum)
+
+
 ```
 
 ## Write CSVs
@@ -357,4 +429,6 @@ Finally we write the CSVs to the data folder for the ACS AMIs and the AMI percen
 write_csv(ami_percentile_by_year, "data/ami_percentile_by_year_long.csv")
 
 write_csv(acs_amis, "data/acs_amis.csv")
+
+write_csv(ami_percentile_by_year_eviews, "data/ami_percentile_by_year_eviews.csv")
 ```
