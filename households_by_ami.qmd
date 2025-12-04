@@ -26,11 +26,16 @@ This script is used to pull the number of households by AMI in Colorado using PU
 #| label: setup
 # NOTE: To load data, you must download both the extract's data and the DDI
 # and also set the working directory to the folder with these files (or change the path below).
-if (!require("ipumsr")) stop("Reading IPUMS data into R requires the ipumsr package. It can be installed using the following command: install.packages('ipumsr')")
+if (!require("ipumsr")) {
+  stop(
+    "Reading IPUMS data into R requires the ipumsr package. It can be installed using the following command: install.packages('ipumsr')"
+  )
+}
 library(tidyverse)
 library(srvyr)
 library(tidycensus)
 library(duckplyr)
+library(sdotools)
 
 # get hud IL data
 library(hudr)
@@ -39,69 +44,41 @@ hud_key <- Sys.getenv("HUD_API_KEY")
 
 ## Median Family Income
 
-### Years 2005-2023 (except 2020) - ACS API
+### HUD
 
-We begin by using the `tidycensus` package to pull the median family income data from the ACS 1 year dataset for each year. This data is available from the ACS API for years 2005-2019 and 2021-2023. Year prior to 2005 are not accessible via the API, and are extracted separtely below. Year 2020 data was never released from the Census Bureau, and is therefore not included.
-
-```{r}
-#| label: acs_years
-
-acs_years <- c(2005:2019, 2021:2023)
-```
-
-### Years 2000-2004 - FTP download
-
-The `get_acs` function is used to pull the data for each year, and the results are combined into a single dataframe, `acs_mfi`. The data is saved to a file so that it does not need to be downloaded again.
-
+Median Family Income files were downloaded from the HUD website and stored as `acs_mfi` using `r_scripts/read_hud_amis.R`.
 ```{r}
 #| label: acs_mfi
 
-# check if file exists and read it if it does
-if (!file.exists("data/acs_mfi.rds")) {
-  acs_mfi <- map(
-    acs_years,
-    ~ get_acs(
-      geography = "state",
-      variables = "B19113_001",
-      state = "CO",
-      year = .x,
-      survey = "acs1"
-    ) |>
-      mutate(year = .x, .before = 1)
-  ) |>
-    bind_rows()
+data_dir <- "data"
+# mfi_file <- "hud_income_limits.parquet"
+mfi_file <- "statewide_mfis_06_25.csv"
+mfi_loc <- file.path(data_dir, mfi_file)
+mfi_state <- read_csv(mfi_loc)
+# # check if file exists and read it if it does
+# if (!drive_check_local(mfi_file, data_dir)) {
+#   drive_download(mfi_file, data_dir, project_folder = "households_by_ami")
+#   if (!drive_check_local(mfi_file, data_dir)) {
+#     acs_mfi <- map(
+#       acs_years,
+#       ~ get_acs(
+#         geography = "state",
+#         variables = "B19113_001",
+#         state = "CO",
+#         year = .x,
+#         survey = "acs1"
+#       ) |>
+#         mutate(year = .x, .before = 1)
+#     ) |>
+#       bind_rows()
 
-  write_rds(acs_mfi, "data/acs_mfi.rds")
-} else {
-  acs_mfi <- read_rds("data/acs_mfi.rds") |>
-    as_duckplyr_df()
-}
+#     compute_parquet(acs_mfi, mfi_loc)
+#   }
+# } else {
+#   acs_mfi <- read_parquet_duckdb(mfi_loc)
+# }
 ```
 
-The remaining data was downloaded from the ACS FTP server and saved as `MultiYearProfiles0402004.csv`. The data is filtered based on the `Stub` "Median family income (dollars)" and the `Geographic Name` "Colorado". The data is then renamed as variable "B19113_001", in order to match the variable name used in the ACS API, and appended to the `acs_mfi` data frame, generated above.
-
-```{r}
-#| label: mfi_00_04
-
-mfi_00_04 <- read_csv("MultiYearProfiles0402004.csv") |>
-  filter(Stub == "Median family income (dollars)" & `Geographic Name` == "Colorado") |>
-  select(NAME = `Geographic Name`, contains("Estimate")) |>
-  pivot_longer(
-    cols = contains("Estimate"),
-    names_to = "year",
-    values_to = "estimate",
-    values_transform = as.numeric
-  ) |>
-  mutate(
-    GEOID = "08",
-    variable = "B19113_001",
-    year = as.integer(str_extract(year, "\\d{4}"))
-  ) |>
-as_duckplyr_df()
-#   |>
-# select(year = 'Year', mfi = 'Estimate') |>
-# mutate(year = as.numeric(year))
-```
 
 ## Household Data (IPUMS)
 
@@ -158,20 +135,20 @@ The output of the IPUMS query is a data frame that includes a record for each ho
 ```{r}
 #| label: query_ipums
 
+ipums_query <- "00074"
+# check if ipums files are in the data folder
+ipums_files <- paste0("usa_", ipums_query, c(".dat.gz", ".xml"))
+ipums_ddi <- file.path(data_dir, ipums_files[2])
 # Load the IPUMS data from RDS file if it exists
-if (file.exists("acs_00_23.rds")) {
-  acs_00_23 <- readRDS("acs_00_23.rds")
+if (drive_check_local(ipums_files, data_dir)) {
+  acs_00_23 <- read_ipums_ddi(ipums_ddi) |>
+    read_ipums_micro()
 } else {
-  ipums_file <- "usa_00074.xml"
-  file_loc <- paste0(
-    "data/ipums_raw/",
-    ipums_file
-  )
-  if (file.exists(file_loc)) {
-    acs_00_23 <- read_ipums_ddi(ipums_file) |>
+  drive_download(ipums_files, data_dir, project_folder = "households_by_ami")
+  if (drive_check_local(ipums_files, data_dir)) {
+    acs_00_23 <- read_ipums_ddi(ipums_ddi) |>
       read_ipums_micro()
   } else {
-    duckplyr::methods_overwrite()
     acs_extract <- define_extract_micro(
       collection = "usa",
       description = "ACS 1 year samples in Colorado of income variables, all samples since 2000",
@@ -221,7 +198,6 @@ if (file.exists("acs_00_23.rds")) {
       download_extract() |>
       read_ipums_micro()
   }
-  write_rds(acs_00_23, "acs_00_23.rds", compress = "bz")
 }
 ```
 
@@ -248,11 +224,10 @@ Cost burdened status is taken by dividing housing costs by household income. Hou
 ```{r}
 #| label: calc_amis
 
-acs_amis <- as_duckplyr_df(acs_00_23) |>
-  left_join(
-    acs_mfi |>
-      bind_rows(mfi_00_04) |>
-      select("YEAR" = "year", mfi = estimate)
+acs_amis <- acs_00_23 |>
+  inner_join(
+    mfi_state,
+    by = c("YEAR" = "year")
   ) |>
   mutate(
     nadults = NUMPREC - NCHILD,
@@ -293,35 +268,39 @@ acs_amis <- as_duckplyr_df(acs_00_23) |>
     ami_group = cut(
       pct_mfi,
       breaks = c(
-        0, 
-        .3, 
-        .5, 
-        .8, 
-        1, 
-        Inf),
+        0,
+        .3,
+        .5,
+        .8,
+        1,
+        Inf
+      ),
       labels = c(
-        "0-30", 
-        "30-50", 
-        "50-80", 
-        "80-100", 
-        "100+"),
+        "0-30",
+        "30-50",
+        "50-80",
+        "80-100",
+        "100+"
+      ),
       right = FALSE,
       ordered_result = TRUE
     ),
-    ami_percentile = ceiling(pct_mfi*10) / 10,
-      tenure = as_factor(OWNERSHP),
-      tenure_detail = as_factor(OWNERSHPD),
+    ami_percentile = ceiling(pct_mfi * 10) / 10,
+    tenure = as_factor(OWNERSHP),
+    tenure_detail = as_factor(OWNERSHPD),
     housing_cost_pct = case_when(
-      OWNERSHP == 2 ~ RENT*12 / HHINCOME,
-      OWNERSHP == 1 ~ OWNCOST*12 / HHINCOME,
+      OWNERSHP == 2 ~ RENT * 12 / HHINCOME,
+      OWNERSHP == 1 ~ OWNCOST * 12 / HHINCOME,
       .default = NA_real_
     ),
     cost_burdened_30 = case_when(
       housing_cost_pct >= .3 ~ TRUE,
-      .default = FALSE),
+      .default = FALSE
+    ),
     cost_burdened_50 = case_when(
       housing_cost_pct >= .5 ~ TRUE,
-      .default = FALSE)
+      .default = FALSE
+    )
   )
 ```
 
@@ -332,20 +311,66 @@ Next we calculate the AMI percentiles by year. We do this by grouping the data b
 #| label: calc_ami_percentiles_by_year
 
 ami_percentile_by_year <- acs_amis |>
-  filter(PERNUM == 1 & GQ == 1 & HHINCOME != 9999999 & HHINCOME > 0 & !(YEAR %in% c(2020))) |>
+  filter(
+    PERNUM == 1 &
+      GQ == 1 &
+      HHINCOME != 9999999 &
+      HHINCOME > 0 &
+      !(YEAR %in% c(2020))
+  ) |>
   summarize(
-    total_hh = sum(HHWT), 
+    total_hh = sum(HHWT),
     .by = c(
-      YEAR, 
-      household_type_id, 
+      YEAR,
+      household_type_id,
       ami_group,
-      ami_percentile, 
-      age_group, 
-      cost_burdened_30, cost_burdened_50, 
-      tenure, tenure_detail, hhsize)) |>
+      ami_percentile,
+      age_group,
+      cost_burdened_30,
+      cost_burdened_50,
+      tenure,
+      tenure_detail,
+      hhsize
+    )
+  ) |>
   arrange(YEAR, ami_percentile, household_type_id, age_group) |>
-  left_join(acs_mfi |>
-    select(YEAR = year, mfi=estimate))
+  left_join(
+    acs_mfi |>
+      select(YEAR = year, mfi = estimate)
+  )
+```
+
+```{r}
+#| label: cost_burdened_ami_groups
+
+acs_srvy <- acs_amis |>
+  filter(
+    PERNUM == 1 &
+      GQ == 1 &
+      HHINCOME != 9999999 &
+      HHINCOME > 0 &
+      !(YEAR %in% c(2020))
+  ) |>
+  as_survey_design(
+    weight = HHWT,
+    repweights = matches("REPWT[0-9]+"),
+    type = "ACS",
+    mse = TRUE
+  )
+
+cost_burden_by_ami <- acs_srvy |>
+  group_by(YEAR, tenure, ami_group) |>
+  summarize(
+    total_hh = survey_total(),
+    cost_burdened_30 = survey_total(cost_burdened_30),
+    cost_burdened_50 = survey_total(cost_burdened_50),
+    .groups = "drop"
+  ) |>
+  mutate(
+    pct_cost_burdened_30 = cost_burdened_30 / total_hh,
+    pct_cost_burdened_50 = cost_burdened_50 / total_hh
+  )
+
 ```
 
 ## Write CSVs
@@ -357,4 +382,6 @@ Finally we write the CSVs to the data folder for the ACS AMIs and the AMI percen
 write_csv(ami_percentile_by_year, "data/ami_percentile_by_year_long.csv")
 
 write_csv(acs_amis, "data/acs_amis.csv")
+
+write_csv(cost_burden_by_ami, "cost_burden_by_ami.csv")
 ```
