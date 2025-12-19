@@ -34,12 +34,21 @@ if (!require("ipumsr")) {
 library(tidyverse)
 library(srvyr)
 library(tidycensus)
-library(duckplyr)
+library(flexiblas)
 library(sdotools)
+library(duckplyr)
+library(sdodemog)
+
+# Enable parallel processing with FlexiBLAS
+flexiblas_load_backend("OPENBLAS-OPENMP")
+flexiblas_set_num_threads(parallel::detectCores() - 1)
 
 # get hud IL data
 library(hudr)
 hud_key <- Sys.getenv("HUD_API_KEY")
+
+# load region crosswalk from sdo database
+xwalk_puma_region <- pull_db_table("xwalk", "hna_puma_region")
 ```
 
 ## Median Family Income
@@ -135,18 +144,20 @@ The output of the IPUMS query is a data frame that includes a record for each ho
 ```{r}
 #| label: query_ipums
 
-ipums_query <- "00074"
+ipums_query <- "00104"
+ipums_dir <- paste0(data_dir, "/ipums_raw")
 # check if ipums files are in the data folder
 ipums_files <- paste0("usa_", ipums_query, c(".dat.gz", ".xml"))
-ipums_ddi <- file.path(data_dir, ipums_files[2])
+ipums_ddi <- file.path(ipums_dir, ipums_files[2])
+
 # Load the IPUMS data from RDS file if it exists
-if (drive_check_local(ipums_files, data_dir)) {
-  acs_00_23 <- read_ipums_ddi(ipums_ddi) |>
+if (drive_check_local(ipums_files, ipums_dir)) {
+  acs_data <- read_ipums_ddi(ipums_ddi) |>
     read_ipums_micro()
 } else {
-  drive_download(ipums_files, data_dir, project_folder = "households_by_ami")
-  if (drive_check_local(ipums_files, data_dir)) {
-    acs_00_23 <- read_ipums_ddi(ipums_ddi) |>
+  drive_download(ipums_files, ipums_dir, project_folder = "households_by_ami")
+  if (drive_check_local(ipums_files, ipums_dir)) {
+    acs_data <- read_ipums_ddi(ipums_ddi) |>
       read_ipums_micro()
   } else {
     acs_extract <- define_extract_micro(
@@ -197,6 +208,8 @@ if (drive_check_local(ipums_files, data_dir)) {
       wait_for_extract() |>
       download_extract() |>
       read_ipums_micro()
+
+    drive_upload(ipums_files, ipums_dir, project_folder = "households_by_ami")
   }
 }
 ```
@@ -224,11 +237,40 @@ Cost burdened status is taken by dividing housing costs by household income. Hou
 ```{r}
 #| label: calc_amis
 
-acs_amis <- acs_00_23 |>
-  inner_join(
-    mfi_state,
-    by = c("YEAR" = "year")
+# Create survey design object
+acs_srvy <- acs_data |>
+  filter(
+    PERNUM == 1, # One record per household
+    GQ %in% c(1, 2) # Households and group quarters
   ) |>
+  as_survey_design(
+    weight = HHWT,
+    repweights = matches("REPWT[0-9]+"),
+    type = "ACS",
+    mse = TRUE
+  )
+
+
+# First create MFI's by PUMA
+mfi_from_pums <- acs_srvy |>
+  filter(
+    PERNUM == 1, # One record per household
+    GQ %in% c(1, 2), # Households and group quarters
+    FTOTINC != 9999999, # Exclude missing values
+    FTOTINC > 0, # Positive income only
+    FAMSIZE >= 2 # Families have 2+ members
+  ) |>
+  group_by(YEAR, PUMA) |>
+  summarize(
+    mfi = survey_median(as.numeric(FTOTINC))
+  )
+
+acs_amis <- acs_data |>
+  inner_join(
+    mfi_from_pums,
+    by = c("YEAR", "PUMA")
+  ) |>
+  zap_labels() |>
   mutate(
     nadults = NUMPREC - NCHILD,
     hhsize = NUMPREC,
@@ -300,8 +342,18 @@ acs_amis <- acs_00_23 |>
     cost_burdened_50 = case_when(
       housing_cost_pct >= .5 ~ TRUE,
       .default = FALSE
+    ),
+    puma_year = case_when(
+      YEAR < 2012 ~ "PUMA00",
+      YEAR < 2022 ~ "PUMA10",
+      .default = "PUMA20"
     )
-  )
+  ) |> 
+    left_join(
+      xwalk_puma_region |> 
+        mutate(PUMA = as.integer(puma)),
+      by = c("puma_year", "PUMA")
+    )
 ```
 
 ## Calculate AMI percentiles by year
@@ -310,46 +362,21 @@ Next we calculate the AMI percentiles by year. We do this by grouping the data b
 ```{r}
 #| label: calc_ami_percentiles_by_year
 
-ami_percentile_by_year <- acs_amis |>
+acs_mfi_srvy <- acs_amis |>
   filter(
-    PERNUM == 1 &
-      GQ == 1 &
-      HHINCOME != 9999999 &
-      HHINCOME > 0 &
-      !(YEAR %in% c(2020))
+    PERNUM == 1, # One record per household
+    GQ %in% c(1, 2) # Households and group quarters
   ) |>
-  summarize(
-    total_hh = sum(HHWT),
-    .by = c(
-      YEAR,
-      household_type_id,
-      ami_group,
-      ami_percentile,
-      age_group,
-      cost_burdened_30,
-      cost_burdened_50,
-      tenure,
-      tenure_detail,
-      hhsize
-    )
-  ) |>
-  arrange(YEAR, ami_percentile, household_type_id, age_group) |>
-  left_join(
-    acs_mfi |>
-      select(YEAR = year, mfi = estimate)
-  )
-```
-
-```{r}
-#| label: cost_burdened_ami_groups
-
-acs_srvy <- acs_amis |>
-  filter(
-    PERNUM == 1 &
-      GQ == 1 &
-      HHINCOME != 9999999 &
-      HHINCOME > 0 &
-      !(YEAR %in% c(2020))
+  select(
+    YEAR,
+    PUMA,
+    PERNUM,
+    GQ,
+    ami_group,
+    region,
+    tenure,
+    HHWT,
+    matches("REPWT[0-9]+")
   ) |>
   as_survey_design(
     weight = HHWT,
@@ -357,6 +384,21 @@ acs_srvy <- acs_amis |>
     type = "ACS",
     mse = TRUE
   )
+
+hh_by_ten_ami_region <- acs_mfi_srvy |>
+  group_by(YEAR, ami_group, region, tenure) |>
+  summarize(
+    total_hh = survey_total(),
+    .groups = "drop"
+  ) |> 
+    rename(year = YEAR)
+
+write_csv(hh_by_ten_ami_region, "data/households_by_ami_region_tenure.csv")
+
+```
+
+```{r}
+#| label: cost_burdened_ami_groups
 
 cost_burden_by_ami <- acs_srvy |>
   group_by(YEAR, tenure, ami_group) |>
@@ -369,6 +411,13 @@ cost_burden_by_ami <- acs_srvy |>
   mutate(
     pct_cost_burdened_30 = cost_burdened_30 / total_hh,
     pct_cost_burdened_50 = cost_burdened_50 / total_hh
+  )
+
+households_ami_tenure <- acs_srvy |>
+  group_by(YEAR, tenure, ami_group) |>
+  summarize(
+    total_hh = survey_total(),
+    .groups = "drop"
   )
 
 ```
