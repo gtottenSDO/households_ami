@@ -38,6 +38,8 @@ library(flexiblas)
 library(sdotools)
 library(duckplyr)
 library(sdodemog)
+library(RPostgres)
+library(DBI)
 
 # Enable parallel processing with FlexiBLAS
 flexiblas_load_backend("OPENBLAS-OPENMP")
@@ -236,10 +238,25 @@ Of particular importance is the method for calculating percentage of median fami
 Cost burdened status is taken by dividing housing costs by household income. Housing costs are based either on the `RENT`^[Note: the `RENT` variable provided by IPUMS represents monthly contract rents, which may or may not include utilities, based on ] variable for renter households, or the `OWNCOST` variable for owner households, and are assigned based on tenure of the household. Housing costs are each reported on a monthly basis, and so must be annualized by multiplying by 12, prior to dividing by household income.
 ```{r}
 #| label: calc_amis
+# join region crosswalk to acs_data
+acs_data <- acs_data |>
+  mutate(
+    puma_year = case_when(
+      YEAR < 2012 ~ "PUMA00",
+      YEAR < 2022 ~ "PUMA10",
+      .default = "PUMA20"
+    )
+  ) |>
+  left_join(
+    xwalk_puma_region |>
+      mutate(PUMA = as.integer(puma)),
+    by = c("puma_year", "PUMA")
+  )
 
 # Create survey design object
 acs_srvy <- acs_data |>
   filter(
+    YEAR >= 2005, # remove years without PUMA data, skip 2000
     PERNUM == 1, # One record per household
     GQ %in% c(1, 2) # Households and group quarters
   ) |>
@@ -260,7 +277,7 @@ mfi_from_pums <- acs_srvy |>
     FTOTINC > 0, # Positive income only
     FAMSIZE >= 2 # Families have 2+ members
   ) |>
-  group_by(YEAR, PUMA) |>
+  group_by(YEAR, region) |>
   summarize(
     mfi = survey_median(as.numeric(FTOTINC))
   )
@@ -268,7 +285,7 @@ mfi_from_pums <- acs_srvy |>
 acs_amis <- acs_data |>
   inner_join(
     mfi_from_pums,
-    by = c("YEAR", "PUMA")
+    by = c("YEAR", "region")
   ) |>
   zap_labels() |>
   mutate(
@@ -302,7 +319,7 @@ acs_amis <- acs_data |>
     ),
     hhadj = case_when(
       hhsize < 4 ~ 1 - (4 - hhsize) * .1,
-      hhsize > .4 ~ 1 + (hhsize - 4) * .08,
+      hhsize >= 4 ~ 1 + (hhsize - 4) * .08,
       .default = 1
     ),
     mfi_hh = mfi * hhadj,
@@ -342,18 +359,8 @@ acs_amis <- acs_data |>
     cost_burdened_50 = case_when(
       housing_cost_pct >= .5 ~ TRUE,
       .default = FALSE
-    ),
-    puma_year = case_when(
-      YEAR < 2012 ~ "PUMA00",
-      YEAR < 2022 ~ "PUMA10",
-      .default = "PUMA20"
     )
-  ) |> 
-    left_join(
-      xwalk_puma_region |> 
-        mutate(PUMA = as.integer(puma)),
-      by = c("puma_year", "PUMA")
-    )
+  )
 ```
 
 ## Calculate AMI percentiles by year
@@ -390,10 +397,15 @@ hh_by_ten_ami_region <- acs_mfi_srvy |>
   summarize(
     total_hh = survey_total(),
     .groups = "drop"
-  ) |> 
-    rename(year = YEAR)
+  ) |>
+  rename(year = YEAR)
 
-write_csv(hh_by_ten_ami_region, "data/households_by_ami_region_tenure.csv")
+DBI::dbWriteTable(
+  connect_to_sdo_db(),
+  Id(schema = "econ", table = "hh_by_ten_ami_region"),
+  hh_by_ten_ami_region,
+  overwrite = TRUE
+)
 
 ```
 
