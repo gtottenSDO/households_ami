@@ -40,6 +40,7 @@ library(duckplyr)
 library(sdodemog)
 library(RPostgres)
 library(DBI)
+library(googledrive)
 
 # Enable parallel processing with FlexiBLAS
 flexiblas_load_backend("OPENBLAS-OPENMP")
@@ -287,7 +288,6 @@ acs_amis <- acs_data |>
     mfi_from_pums,
     by = c("YEAR", "region")
   ) |>
-  zap_labels() |>
   mutate(
     nadults = NUMPREC - NCHILD,
     hhsize = NUMPREC,
@@ -347,11 +347,12 @@ acs_amis <- acs_data |>
     ami_percentile = ceiling(pct_mfi * 10) / 10,
     tenure = as_factor(OWNERSHP),
     tenure_detail = as_factor(OWNERSHPD),
-    housing_cost_pct = case_when(
-      OWNERSHP == 2 ~ RENT * 12 / HHINCOME,
-      OWNERSHP == 1 ~ OWNCOST * 12 / HHINCOME,
+    housing_cost = case_when(
+      OWNERSHP == 2 ~ RENT * 12,
+      OWNERSHP == 1 ~ OWNCOST * 12,
       .default = NA_real_
     ),
+    housing_cost_pct = housing_cost / HHINCOME,
     cost_burdened_30 = case_when(
       housing_cost_pct >= .3 ~ TRUE,
       .default = FALSE
@@ -360,16 +361,187 @@ acs_amis <- acs_data |>
       housing_cost_pct >= .5 ~ TRUE,
       .default = FALSE
     )
-  )
+  ) |>
+  zap_labels()
+
+
+acs_amis_state <- acs_data |>
+  inner_join(
+    mfi_state,
+    by = c("YEAR" = "year")
+  ) |>
+  mutate(
+    nadults = NUMPREC - NCHILD,
+    hhsize = NUMPREC,
+    household_type_id = factor(case_when(
+      nadults == 1 & NCHILD == 0 ~ "One adult with no children	",
+      nadults == 1 & NCHILD > 0 ~ "One adult with children",
+      nadults > 1 & NCHILD == 0 ~ "More than one adult with no children",
+      nadults > 1 & NCHILD > 0 ~ "More than one adult with children"
+    )),
+    age_group = cut(
+      AGE,
+      breaks = c(
+        0,
+        18,
+        25,
+        45,
+        65,
+        Inf
+      ),
+      labels = c(
+        "Under 18",
+        "18-24",
+        "25-44",
+        "45-64",
+        "65 and over"
+      ),
+      right = FALSE,
+      ordered_result = TRUE
+    ),
+    hhadj = case_when(
+      hhsize < 4 ~ 1 - (4 - hhsize) * .1,
+      hhsize >= 4 ~ 1 + (hhsize - 4) * .08,
+      .default = 1
+    ),
+    mfi_hh = mfi * hhadj,
+    pct_mfi = HHINCOME / mfi_hh,
+    ami_group = cut(
+      pct_mfi,
+      breaks = c(
+        0,
+        .3,
+        .5,
+        .8,
+        1,
+        Inf
+      ),
+      labels = c(
+        "0-30",
+        "30-50",
+        "50-80",
+        "80-100",
+        "100+"
+      ),
+      right = FALSE,
+      ordered_result = TRUE
+    ),
+    ami_percentile = ceiling(pct_mfi * 10) / 10,
+    tenure = as_factor(OWNERSHP),
+    tenure_detail = as_factor(OWNERSHPD),
+    housing_cost = case_when(
+      OWNERSHP == 2 ~ RENT * 12,
+      OWNERSHP == 1 ~ OWNCOST * 12,
+      .default = NA_real_
+    ),
+    housing_cost_pct = housing_cost / HHINCOME,
+    cost_burdened_30 = case_when(
+      housing_cost_pct >= .3 ~ TRUE,
+      .default = FALSE
+    ),
+    cost_burdened_50 = case_when(
+      housing_cost_pct >= .5 ~ TRUE,
+      .default = FALSE
+    )
+  ) |>
+  zap_labels()
 ```
 
 ## Calculate AMI percentiles by year
 
 Next we calculate the AMI percentiles by year. We do this by grouping the data by year, household type, AMI percentile, AMI group^[While this is duplicative with AMI percentiles it makes future analysis simpler], age group, cost burdened 30, cost burdened 50, tenure, tenure detail, and household size. We then calculate the total household weight for each group. We also join the median family income (MFI) for each year.
 ```{r}
-#| label: calc_ami_percentiles_by_year
+#| label: calc_ami_percentiles_by_year_state
 
-acs_mfi_srvy <- acs_amis |>
+acs_mfi_srvy_state <- acs_amis_state |>
+  filter(
+    PERNUM == 1, # One record per household
+    GQ %in% c(1, 2) # Households and group quarters
+  ) |>
+  select(
+    YEAR,
+    PERNUM,
+    GQ,
+    ami_group,
+    tenure,
+    HHWT,
+    RENT,
+    OWNCOST,
+    housing_cost,
+    cost_burdened_30,
+    cost_burdened_50,
+    matches("REPWT[0-9]+")
+  ) |>
+  mutate(
+    tenure = str_to_lower(str_extract(tenure, "Own|Rent"))
+  ) |>
+  as_survey_design(
+    weight = HHWT,
+    repweights = matches("REPWT[0-9]+"),
+    type = "ACS",
+    mse = TRUE
+  )
+
+
+hh_by_ten_ami_state <- acs_mfi_srvy_state |>
+  group_by(YEAR, ami_group, tenure) |>
+  summarize(
+    hh = survey_total(),
+    .groups = "drop"
+  ) |>
+  rename(year = YEAR)
+
+hh_by_ten_ami_state_pct <- hh_by_ten_ami_state |>
+  filter(!is.na(ami_group)) |>
+  mutate(
+    total_hh = sum(hh),
+    .by = c("year", "tenure")
+  ) |>
+  mutate(
+    pct_hh = hh / total_hh
+  )
+
+
+```
+
+
+```{r}
+#| label: cost_burdened_ami_groups
+
+cost_burden_by_ami <- acs_mfi_srvy_state |>
+  group_by(YEAR, tenure, ami_group) |>
+  summarize(
+    total_hh = survey_total(),
+    cost_burdened_30 = survey_total(cost_burdened_30),
+    cost_burdened_50 = survey_total(cost_burdened_50),
+    .groups = "drop"
+  ) |>
+  mutate(
+    pct_cost_burdened_30 = cost_burdened_30 / total_hh,
+    pct_cost_burdened_50 = cost_burdened_50 / total_hh
+  )
+
+sdo_db_create_table(
+  cost_burden_by_ami,
+  con = connect_to_sdo_db(),
+  schema = "econ",
+  table = "cost_burden_by_ami",
+  vintage = "2024"
+)
+
+households_ami_tenure <- acs_srvy |>
+  group_by(YEAR, tenure, ami_group) |>
+  summarize(
+    total_hh = survey_total(),
+    .groups = "drop"
+  )
+
+```
+
+``` {r}
+#| label: calc_ami_percentiles_by_year_region
+
+acs_mfi_srvy_region <- acs_amis |>
   filter(
     PERNUM == 1, # One record per household
     GQ %in% c(1, 2) # Households and group quarters
@@ -392,47 +564,20 @@ acs_mfi_srvy <- acs_amis |>
     mse = TRUE
   )
 
-hh_by_ten_ami_region <- acs_mfi_srvy |>
+
+hh_by_ten_ami_region <- acs_mfi_srvy_region |>
   group_by(YEAR, ami_group, region, tenure) |>
   summarize(
     total_hh = survey_total(),
     .groups = "drop"
   ) |>
+  mutate(
+    tenure = (str_extract(tenure, "Own|Rent"))
+  ) |>
   rename(year = YEAR)
 
-DBI::dbWriteTable(
-  connect_to_sdo_db(),
-  Id(schema = "econ", table = "hh_by_ten_ami_region"),
-  hh_by_ten_ami_region,
-  overwrite = TRUE
-)
 
-```
-
-```{r}
-#| label: cost_burdened_ami_groups
-
-cost_burden_by_ami <- acs_srvy |>
-  group_by(YEAR, tenure, ami_group) |>
-  summarize(
-    total_hh = survey_total(),
-    cost_burdened_30 = survey_total(cost_burdened_30),
-    cost_burdened_50 = survey_total(cost_burdened_50),
-    .groups = "drop"
-  ) |>
-  mutate(
-    pct_cost_burdened_30 = cost_burdened_30 / total_hh,
-    pct_cost_burdened_50 = cost_burdened_50 / total_hh
-  )
-
-households_ami_tenure <- acs_srvy |>
-  group_by(YEAR, tenure, ami_group) |>
-  summarize(
-    total_hh = survey_total(),
-    .groups = "drop"
-  )
-
-```
+  ```
 
 ## Write CSVs
 
@@ -445,4 +590,96 @@ write_csv(ami_percentile_by_year, "data/ami_percentile_by_year_long.csv")
 write_csv(acs_amis, "data/acs_amis.csv")
 
 write_csv(cost_burden_by_ami, "cost_burden_by_ami.csv")
+```
+
+
+```{r}
+#| label: write_data
+sdo_con <- connect_to_sdo_db()
+
+DBI::dbWriteTable(
+  sdo_con,
+  Id(schema = "econ", table = "hh_by_ten_ami_state"),
+  hh_by_ten_ami_state_pct,
+  overwrite = TRUE
+)
+
+sdo_db_create_table(
+  hh_by_ten_ami_state_pct,
+  con = connect_to_sdo_db(),
+  schema = "econ",
+  table = "hh_by_ten_ami_state",
+  vintage = "2024"
+)
+
+
+hh_by_ten_ami_state_eviews <- hh_by_ten_ami_state |>
+  mutate(
+    ami_group = str_replace(ami_group, "-", "_")
+  ) |>
+  select(-contains("se")) |>
+  pivot_wider(
+    names_from = c(tenure, ami_group),
+    values_from = hh,
+    names_sep = "_"
+  )
+
+write_csv(
+  hh_by_ten_ami_state_eviews,
+  "data/hh_by_ten_ami_state_eviews.csv"
+)
+
+rent_own_cost_state <- acs_mfi_srvy_state |>
+  group_by(YEAR, tenure) |>
+  summarize(cost = survey_quantile(housing_cost, c(0.25, .5, 0.75))) |>
+  pivot_longer(
+    cols = starts_with("cost"),
+    names_to = "cost"
+  ) |>
+  unite("var", tenure, cost, sep = "_") |>
+  pivot_wider(names_from = var, values_from = value)
+
+write_csv(
+  rent_own_cost_state,
+  "data/acs_rent_own.csv"
+)
+
+write_csv(
+  mfi_state |>
+    rename(mfi_state = mfi),
+  "data/acs_mfi_state.csv"
+)
+
+drive_folder = as_id("1TdbwsSvZXVOeDAZUhvl2IF4wAlFr-Qpb")
+drive_put(
+  "data/hh_by_ten_ami_state_eviews.csv",
+  path = drive_folder
+)
+
+drive_put(
+  "data/acs_rent_own.csv",
+  path = drive_folder
+)
+
+drive_put(
+  "data/acs_mfi_state.csv",
+  path = drive_folder
+)
+
+DBI::dbWriteTable(
+  connect_to_sdo_db(),
+  Id(schema = "econ", table = "hh_by_ten_ami_region"),
+  hh_by_ten_ami_region,
+  overwrite = TRUE
+)
+
+write_csv(
+  hh_by_ten_ami_region,
+  "data/hh_by_ten_ami_region.csv"
+)
+
+drive_put(
+  "data/hh_by_ten_ami_region.csv",
+  path = as_id("1sUrHAmHzHFgX0Pbfh--2DhD26t8tn0JP")
+)
 ```
