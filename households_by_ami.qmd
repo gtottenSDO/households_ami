@@ -154,12 +154,12 @@ ipums_files <- paste0("usa_", ipums_query, c(".dat.gz", ".xml"))
 ipums_ddi <- file.path(ipums_dir, ipums_files[2])
 
 # Load the IPUMS data from RDS file if it exists
-if (drive_check_local(ipums_files, ipums_dir)) {
+if (sdo_drive_check_local(ipums_files, ipums_dir)) {
   acs_data <- read_ipums_ddi(ipums_ddi) |>
     read_ipums_micro()
 } else {
-  drive_download(ipums_files, ipums_dir, project_folder = "households_by_ami")
-  if (drive_check_local(ipums_files, ipums_dir)) {
+  sdo_drive_download(ipums_files, ipums_dir, project_folder = "households_by_ami")
+  if (sdo_drive_check_local(ipums_files, ipums_dir)) {
     acs_data <- read_ipums_ddi(ipums_ddi) |>
       read_ipums_micro()
   } else {
@@ -212,7 +212,73 @@ if (drive_check_local(ipums_files, ipums_dir)) {
       download_extract() |>
       read_ipums_micro()
 
-    drive_upload(ipums_files, ipums_dir, project_folder = "households_by_ami")
+    sdo_drive_upload(ipums_files, ipums_dir, project_folder = "households_by_ami")
+  }
+}
+```
+
+```{r}
+#| label: query_ipums_us
+
+ipums_query <- "00107"
+ipums_dir <- paste0(data_dir, "/ipums_raw")
+# check if ipums files are in the data folder
+ipums_files <- paste0("usa_", ipums_query, c(".csv.gz", ".xml"))
+ipums_ddi <- file.path(ipums_dir, ipums_files[2])
+
+# Load the IPUMS data from RDS file if it exists
+if (sdo_drive_check_local(ipums_files, ipums_dir)) {
+  acs_data_us <- read_ipums_ddi(ipums_ddi) |>
+    read_ipums_micro()
+} else {
+  sdo_drive_download(ipums_files, ipums_dir, project_folder = "households_by_ami")
+  if (sdo_drive_check_local(ipums_files, ipums_dir)) {
+    acs_data_us <- read_ipums_ddi(ipums_ddi) |>
+      read_ipums_micro()
+  } else {
+    acs_extract_us <- define_extract_micro(
+      collection = "usa",
+      description = "ACS 1 year samples in US of income variables, all samples since 2000",
+      samples = acs_samples,
+      variables = list(
+        "STATEFIP",
+        "NUMPREC",
+        "CPI99",
+        "OWNERSHP",
+        "OWNCOST",
+        "RENT",
+        "RENTGRS",
+        "RELATE",
+        "HHTYPE",
+        "HHINCOME",
+        "INCTOT",
+        "INCWAGE",
+        "INCBUS00",
+        "INCSS",
+        "INCWELFR",
+        "INCINVST",
+        "INCSUPP",
+        "INCOTHER",
+        "INCEARN",
+        "POVERTY",
+        "CBPOVERTY",
+        "AGE",
+        "FAMUNIT",
+        "FAMSIZE",
+        "NCHILD",
+        "NCHLT5",
+        "FTOTINC",
+        "BEDROOMS",
+        "MOVEDIN"
+      ),
+      data_format = "csv"
+    ) |>
+      submit_extract() |>
+      wait_for_extract() |>
+      download_extract() |>
+      read_ipums_micro()
+
+    sdo_drive_upload(ipums_files, ipums_dir, project_folder = "households_by_ami")
   }
 }
 ```
