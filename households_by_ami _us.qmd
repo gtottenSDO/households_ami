@@ -10,17 +10,7 @@ format:
    output: false
 ---
 
-## Statutory Requirements
 
-Per C.R.S. 24-32-3702(1)(b),
-
-> **(b)** No later than November 30, 2027, and every six years thereafter, the director shall conduct a statewide housing needs assessment that analyzes existing and future statewide housing needs. The director shall publish a report based on the statewide housing needs assessment and regional and local housing needs assessments accepted by the department pursuant to section 24-32-3703 (3) or 24-32-3704 (3) that identifies current housing stock and estimates the number and type of dwelling units needed to accommodate future housing needs of the state based on population change projections. The report shall categorize statewide housing needs by ***household size***; ***household type***, including *accessible*, *visitable*, *supportive*, ***affordable for-sale***, and ***affordable rental housing***; and ***household income levels***, including *extremely low-*, *very low-*, *low-*, *moderate-*, and *middle-income* households as designated by the United States department of Housing and Urban Development ("HUD").
-
-In pursuing these requirements, we will begin by establishing a historic time series of housing data, including the number of housing units by type and income level, utilizing data from the Census Bureau's Public Use Microdata Sample (PUMS), and then forecast future marginal demand based on our projections of total households by type.
-
-## Data Collection
-
-This script is used to pull the number of households by AMI in Colorado using PUMS data via IPUMS using the `ipumsr` package. Median Family Incomes are collected separately as provided by HUD, using the `tidycensus` package.
 
 ```{r}
 #| label: setup
@@ -41,54 +31,14 @@ library(sdodemog)
 library(RPostgres)
 library(DBI)
 library(googledrive)
+  library(furrr)
 
 # Enable parallel processing with FlexiBLAS
 flexiblas_load_backend("OPENBLAS-OPENMP")
 flexiblas_set_num_threads(parallel::detectCores() - 1)
 
-# get hud IL data
-library(hudr)
-hud_key <- Sys.getenv("HUD_API_KEY")
-
-# load region crosswalk from sdo database
-xwalk_puma_region <- pull_db_table("xwalk", "hna_puma_region")
-```
-
-## Median Family Income
-
-### HUD
-
-Median Family Income files were downloaded from the HUD website and stored as `acs_mfi` using `r_scripts/read_hud_amis.R`.
-```{r}
-#| label: acs_mfi
-
 data_dir <- "data"
-# mfi_file <- "hud_income_limits.parquet"
-mfi_file <- "statewide_mfis_06_25.csv"
-mfi_loc <- file.path(data_dir, mfi_file)
-mfi_state <- read_csv(mfi_loc)
-# # check if file exists and read it if it does
-# if (!drive_check_local(mfi_file, data_dir)) {
-#   drive_download(mfi_file, data_dir, project_folder = "households_by_ami")
-#   if (!drive_check_local(mfi_file, data_dir)) {
-#     acs_mfi <- map(
-#       acs_years,
-#       ~ get_acs(
-#         geography = "state",
-#         variables = "B19113_001",
-#         state = "CO",
-#         year = .x,
-#         survey = "acs1"
-#       ) |>
-#         mutate(year = .x, .before = 1)
-#     ) |>
-#       bind_rows()
 
-#     compute_parquet(acs_mfi, mfi_loc)
-#   }
-# } else {
-#   acs_mfi <- read_parquet_duckdb(mfi_loc)
-# }
 ```
 
 
@@ -145,32 +95,31 @@ Next an extract is created and processed. The following table includes relevant 
 The output of the IPUMS query is a data frame that includes a record for each household in Colorado from the ACS 1-year samples since 2000. Each record represents a person, with the head of household identified as person 1, and all other persons in the household following. This is based on the `rectangular` record format from IPUMS, rather than `hierachal`, as the household records lack necessary data for the analysis, such as person ages, or number of children in the household.
 
 ```{r}
-#| label: query_ipums
+#| label: query_ipums_us
 
-ipums_query <- "00104"
+ipums_query <- "00107"
 ipums_dir <- paste0(data_dir, "/ipums_raw")
 # check if ipums files are in the data folder
-ipums_files <- paste0("usa_", ipums_query, c(".dat.gz", ".xml"))
+ipums_files <- paste0("usa_", ipums_query, c(".csv.gz", ".xml"))
 ipums_ddi <- file.path(ipums_dir, ipums_files[2])
 
 # Load the IPUMS data from RDS file if it exists
 if (sdo_drive_check_local(ipums_files, ipums_dir)) {
-  acs_data <- read_ipums_ddi(ipums_ddi) |>
-    read_ipums_micro()
+  acs_us_ddi <- read_ipums_ddi(ipums_ddi)
+
+  ipums_us_duckplyr <- read_parquet_duckdb("data/ipums_parquet/", prudence = "lavish")
 } else {
   sdo_drive_download(ipums_files, ipums_dir, project_folder = "households_by_ami")
   if (sdo_drive_check_local(ipums_files, ipums_dir)) {
-    acs_data <- read_ipums_ddi(ipums_ddi) |>
+    acs_data_us <- read_ipums_ddi(ipums_ddi) |>
       read_ipums_micro()
   } else {
-    acs_extract <- define_extract_micro(
+    acs_extract_us <- define_extract_micro(
       collection = "usa",
-      description = "ACS 1 year samples in Colorado of income variables, all samples since 2000",
+      description = "ACS 1 year samples in US of income variables, all samples since 2000",
       samples = acs_samples,
       variables = list(
-        var_spec("STATEFIP", case_selections = "08"),
-        "COUNTYFIP",
-        "PUMA",
+        "STATEFIP",
         "NUMPREC",
         "CPI99",
         "OWNERSHP",
@@ -178,11 +127,6 @@ if (sdo_drive_check_local(ipums_files, ipums_dir)) {
         "RENT",
         "RENTGRS",
         "RELATE",
-        "RACE",
-        "SEX",
-        "HISPAN",
-        "BPL",
-        "CITIZEN",
         "HHTYPE",
         "HHINCOME",
         "INCTOT",
@@ -203,14 +147,17 @@ if (sdo_drive_check_local(ipums_files, ipums_dir)) {
         "NCHLT5",
         "FTOTINC",
         "BEDROOMS",
-        "MOVEDIN",
-        "REPWT"
-      )
+        "MOVEDIN"
+      ),
+      data_format = "csv"
     ) |>
       submit_extract() |>
       wait_for_extract() |>
-      download_extract() |>
-      read_ipums_micro()
+      download_extract()
+
+    # convert to parquet files by year
+      ipums_us_duckplyr_csv <- read_csv_duckdb("data/ipums_raw/usa_00107.csv.gz", prudence = "stingy")
+    map(c(2000:2024), \(x) ipums_us_duckplyr_csv |> filter(YEAR == x) |> compute_parquet(paste0("data/ipums_parquet/ipums_", x,".parquet")))
 
     sdo_drive_upload(ipums_files, ipums_dir, project_folder = "households_by_ami")
   }
@@ -238,199 +185,147 @@ Of particular importance is the method for calculating percentage of median fami
 
 Cost burdened status is taken by dividing housing costs by household income. Housing costs are based either on the `RENT`^[Note: the `RENT` variable provided by IPUMS represents monthly contract rents, which may or may not include utilities, based on ] variable for renter households, or the `OWNCOST` variable for owner households, and are assigned based on tenure of the household. Housing costs are each reported on a monthly basis, and so must be annualized by multiplying by 12, prior to dividing by household income.
 ```{r}
-#| label: calc_amis
-# join region crosswalk to acs_data
-acs_data <- acs_data |>
-  mutate(
-    puma_year = case_when(
-      YEAR < 2012 ~ "PUMA00",
-      YEAR < 2022 ~ "PUMA10",
-      .default = "PUMA20"
-    )
-  ) |>
-  left_join(
-    xwalk_puma_region |>
-      mutate(PUMA = as.integer(puma)),
-    by = c("puma_year", "PUMA")
-  )
+#| label: calc_mfis
 
-# Create survey design object
-acs_srvy <- acs_data |>
+# create function for calculating mfi by year
+get_mfi_us <-  function(YEAR) {
+parquet_file <- paste0("data/ipums_parquet/ipums_", YEAR, ".parquet")
+
+  mfi_df <- read_parquet_duckdb(parquet_file) |>
   filter(
-    YEAR >= 2005, # remove years without PUMA data, skip 2000
+    # YEAR == 2000,
     PERNUM == 1, # One record per household
     GQ %in% c(1, 2) # Households and group quarters
   ) |>
   as_survey_design(
     weight = HHWT,
-    repweights = matches("REPWT[0-9]+"),
+    # repweights = matches("REPWT[0-9]+"),
     type = "ACS",
     mse = TRUE
+  ) |>
+  filter(
+    # PERNUM == 1, # One record per household
+    # GQ %in% c(1, 2), # Households and group quarters
+    FTOTINC != 9999999, # Exclude missing values
+    FTOTINC > 0, # Positive income only
+    FAMSIZE >= 2 # Families have 2+ members
+  ) |>
+  group_by(YEAR) |>
+  summarize(
+    mfi = survey_median(as.numeric(FTOTINC))
+  ) 
+
+  return(mfi_df)
+}
+
+# load data if saved otherwise calculate for all years
+if (!file.exists("data/us_mfi_from_pums_us.parquet")) {
+# First create MFI's by PUMA
+mfi_from_pums_us <- map(2000:2024, get_mfi_us, .progress = TRUE)
+
+  compute_parquet(bind_rows(mfi_from_pums_us), "data/us_mfi_from_pums_us.parquet")
+} else {
+  mfi_from_pums_us <- read_parquet_duckdb("data/us_mfi_from_pums_us.parquet") |> collect()
+}
+
+```
+
+``` {r}
+#| label: calc_amis
+
+# create function for calculating necessary variables and adding them to acs_amis_us
+prep_amis <- function(mfi_year, mfi) {
+  acs_amis_us <- ipums_us_duckplyr |>
+  filter(YEAR == mfi_year) |>
+  mutate(
+    nadults = NUMPREC - NCHILD,
+    hhsize = NUMPREC,
+    household_type_id = (case_when(
+      nadults == 1 & NCHILD == 0 ~ "One adult with no children	",
+      nadults == 1 & NCHILD > 0 ~ "One adult with children",
+      nadults > 1 & NCHILD == 0 ~ "More than one adult with no children",
+      nadults > 1 & NCHILD > 0 ~ "More than one adult with children"
+    )),
+    age_group = as.character(
+      cut(
+      AGE,
+      breaks = c(
+        0,
+        18,
+        25,
+        45,
+        65,
+        Inf
+      ),
+      labels = c(
+        "Under 18",
+        "18-24",
+        "25-44",
+        "45-64",
+        "65 and over"
+      ),
+      right = FALSE,
+      ordered_result = FALSE
+    )
+    ),
+    hhadj = case_when(
+      hhsize < 4 ~ 1 - (4 - hhsize) * .1,
+      hhsize >= 4 ~ 1 + (hhsize - 4) * .08,
+      .default = 1
+    ),
+    mfi_hh = mfi * hhadj,
+    pct_mfi = HHINCOME / mfi_hh,
+    ami_group = as.character(
+      cut(
+      pct_mfi,
+      breaks = c(
+        0,
+        .3,
+        .5,
+        .8,
+        1,
+        Inf
+      ),
+      labels = c(
+        "Less than 30",
+        "30 to 50",
+        "50 to 80",
+        "80 to 100",
+        "Greater than 100"
+      ),
+      right = FALSE,
+      ordered_result = FALSE
+    )
+    ),
+    ami_percentile = ceiling(pct_mfi * 10) / 10,
+    tenure = case_when(
+      OWNERSHP == 1 ~ "Owner",
+      OWNERSHP == 2 ~ "Renter",
+      TRUE ~ "Other"
+    ),
+    # tenure_detail = (OWNERSHPD),
+    housing_cost = case_when(
+      OWNERSHP == 2 ~ RENT * 12,
+      OWNERSHP == 1 ~ OWNCOST * 12,
+      .default = NA_real_
+    ),
+    housing_cost_pct = housing_cost / HHINCOME,
+    cost_burdened_30 = case_when(
+      housing_cost_pct >= .3 ~ TRUE,
+      .default = FALSE
+    ),
+    cost_burdened_50 = case_when(
+      housing_cost_pct >= .5 ~ TRUE,
+      .default = FALSE
+    )
   )
+}
 
+if (!file.exists("data/ami_parquet/ami_2000mfi.parquet")) {
+  acs_us <- map2(mfi_from_pums_us$YEAR, mfi_from_pums_us$mfi, ~ prep_amis(.x, .y) |> compute_parquet(paste0("data/ami_parquet/ami_", .x, "mfi.parquet")), .progress = TRUE)
+}
 
-acs_amis <- acs_data |>
-  inner_join(
-    mfi_from_pums,
-    by = c("YEAR", "region")
-  ) |>
-  mutate(
-    nadults = NUMPREC - NCHILD,
-    hhsize = NUMPREC,
-    household_type_id = factor(case_when(
-      nadults == 1 & NCHILD == 0 ~ "One adult with no children	",
-      nadults == 1 & NCHILD > 0 ~ "One adult with children",
-      nadults > 1 & NCHILD == 0 ~ "More than one adult with no children",
-      nadults > 1 & NCHILD > 0 ~ "More than one adult with children"
-    )),
-    age_group = cut(
-      AGE,
-      breaks = c(
-        0,
-        18,
-        25,
-        45,
-        65,
-        Inf
-      ),
-      labels = c(
-        "Under 18",
-        "18-24",
-        "25-44",
-        "45-64",
-        "65 and over"
-      ),
-      right = FALSE,
-      ordered_result = TRUE
-    ),
-    hhadj = case_when(
-      hhsize < 4 ~ 1 - (4 - hhsize) * .1,
-      hhsize >= 4 ~ 1 + (hhsize - 4) * .08,
-      .default = 1
-    ),
-    mfi_hh = mfi * hhadj,
-    pct_mfi = HHINCOME / mfi_hh,
-    ami_group = cut(
-      pct_mfi,
-      breaks = c(
-        0,
-        .3,
-        .5,
-        .8,
-        1,
-        Inf
-      ),
-      labels = c(
-        "0-30",
-        "30-50",
-        "50-80",
-        "80-100",
-        "100+"
-      ),
-      right = FALSE,
-      ordered_result = TRUE
-    ),
-    ami_percentile = ceiling(pct_mfi * 10) / 10,
-    tenure = as_factor(OWNERSHP),
-    tenure_detail = as_factor(OWNERSHPD),
-    housing_cost = case_when(
-      OWNERSHP == 2 ~ RENT * 12,
-      OWNERSHP == 1 ~ OWNCOST * 12,
-      .default = NA_real_
-    ),
-    housing_cost_pct = housing_cost / HHINCOME,
-    cost_burdened_30 = case_when(
-      housing_cost_pct >= .3 ~ TRUE,
-      .default = FALSE
-    ),
-    cost_burdened_50 = case_when(
-      housing_cost_pct >= .5 ~ TRUE,
-      .default = FALSE
-    )
-  ) |>
-  zap_labels()
-
-
-acs_amis_state <- acs_data |>
-  inner_join(
-    mfi_state,
-    by = c("YEAR" = "year")
-  ) |>
-  mutate(
-    nadults = NUMPREC - NCHILD,
-    hhsize = NUMPREC,
-    household_type_id = factor(case_when(
-      nadults == 1 & NCHILD == 0 ~ "One adult with no children	",
-      nadults == 1 & NCHILD > 0 ~ "One adult with children",
-      nadults > 1 & NCHILD == 0 ~ "More than one adult with no children",
-      nadults > 1 & NCHILD > 0 ~ "More than one adult with children"
-    )),
-    age_group = cut(
-      AGE,
-      breaks = c(
-        0,
-        18,
-        25,
-        45,
-        65,
-        Inf
-      ),
-      labels = c(
-        "Under 18",
-        "18-24",
-        "25-44",
-        "45-64",
-        "65 and over"
-      ),
-      right = FALSE,
-      ordered_result = TRUE
-    ),
-    hhadj = case_when(
-      hhsize < 4 ~ 1 - (4 - hhsize) * .1,
-      hhsize >= 4 ~ 1 + (hhsize - 4) * .08,
-      .default = 1
-    ),
-    mfi_hh = mfi * hhadj,
-    pct_mfi = HHINCOME / mfi_hh,
-    ami_group = cut(
-      pct_mfi,
-      breaks = c(
-        0,
-        .3,
-        .5,
-        .8,
-        1,
-        Inf
-      ),
-      labels = c(
-        "0-30",
-        "30-50",
-        "50-80",
-        "80-100",
-        "100+"
-      ),
-      right = FALSE,
-      ordered_result = TRUE
-    ),
-    ami_percentile = ceiling(pct_mfi * 10) / 10,
-    tenure = as_factor(OWNERSHP),
-    tenure_detail = as_factor(OWNERSHPD),
-    housing_cost = case_when(
-      OWNERSHP == 2 ~ RENT * 12,
-      OWNERSHP == 1 ~ OWNCOST * 12,
-      .default = NA_real_
-    ),
-    housing_cost_pct = housing_cost / HHINCOME,
-    cost_burdened_30 = case_when(
-      housing_cost_pct >= .3 ~ TRUE,
-      .default = FALSE
-    ),
-    cost_burdened_50 = case_when(
-      housing_cost_pct >= .5 ~ TRUE,
-      .default = FALSE
-    )
-  ) |>
-  zap_labels()
+rm(ipums_us_duckplyr)
 ```
 
 ## Calculate AMI percentiles by year
@@ -438,8 +333,11 @@ acs_amis_state <- acs_data |>
 Next we calculate the AMI percentiles by year. We do this by grouping the data by year, household type, AMI percentile, AMI group^[While this is duplicative with AMI percentiles it makes future analysis simpler], age group, cost burdened 30, cost burdened 50, tenure, tenure detail, and household size. We then calculate the total household weight for each group. We also join the median family income (MFI) for each year.
 ```{r}
 #| label: calc_ami_percentiles_by_year_state
+ami_parquet_files <- list.files("data/ami_parquet/", full.names = TRUE)
 
-acs_mfi_srvy_state <- acs_amis_state |>
+create_acs_mfi_srvy_us <- function(file) {
+acs_mfi_srvy_us <- read_parquet_duckdb(file) |>
+  # collect() |> 
   filter(
     PERNUM == 1, # One record per household
     GQ %in% c(1, 2) # Households and group quarters
@@ -455,46 +353,17 @@ acs_mfi_srvy_state <- acs_amis_state |>
     OWNCOST,
     housing_cost,
     cost_burdened_30,
-    cost_burdened_50,
-    matches("REPWT[0-9]+")
-  ) |>
-  mutate(
-    tenure = str_to_lower(str_extract(tenure, "Own|Rent"))
+    cost_burdened_50
   ) |>
   as_survey_design(
     weight = HHWT,
-    repweights = matches("REPWT[0-9]+"),
     type = "ACS",
     mse = TRUE
   )
+}
 
-
-hh_by_ten_ami_state <- acs_mfi_srvy_state |>
-  group_by(YEAR, ami_group, tenure) |>
-  summarize(
-    hh = survey_total(),
-    .groups = "drop"
-  ) |>
-  rename(year = YEAR)
-
-hh_by_ten_ami_state_pct <- hh_by_ten_ami_state |>
-  filter(!is.na(ami_group)) |>
-  mutate(
-    total_hh = sum(hh),
-    .by = c("year", "tenure")
-  ) |>
-  mutate(
-    pct_hh = hh / total_hh
-  )
-
-
-```
-
-
-```{r}
-#| label: cost_burdened_ami_groups
-
-cost_burden_by_ami <- acs_mfi_srvy_state |>
+calc_amis <- function(acs_srvy) {
+ami_df <- acs_srvy |>
   group_by(YEAR, tenure, ami_group) |>
   summarize(
     total_hh = survey_total(),
@@ -507,76 +376,28 @@ cost_burden_by_ami <- acs_mfi_srvy_state |>
     pct_cost_burdened_50 = cost_burdened_50 / total_hh
   )
 
-sdo_db_create_table(
-  cost_burden_by_ami,
-  con = connect_to_sdo_db(),
-  schema = "econ",
-  table = "cost_burden_by_ami",
-  vintage = "2024"
-)
+  return(ami_df)
+}
 
-households_ami_tenure <- acs_srvy |>
-  group_by(YEAR, tenure, ami_group) |>
-  summarize(
-    total_hh = survey_total(),
-    .groups = "drop"
-  )
+# hh_by_ten_ami_us <- map(ami_parquet_files[2], ~ create_acs_mfi_srvy_us(.x) |> calc_amis(), .progress = TRUE) |> 
+  # bind_rows()
+
+# set up a multisession plan, then parallel map over files
+
+  plan(multisession, workers = parallel::detectCores() - 1)
+  
+  process_file <- function(file) {
+    create_acs_mfi_srvy_us(file) |> calc_amis()
+  }
+  
+  hh_by_ten_ami_us <- future_map_dfr(ami_parquet_files, process_file, .progress = TRUE) |> 
+    rename_with(tolower)
+  # plan(sequential)  # reset
+
 
 ```
 
-``` {r}
-#| label: calc_ami_percentiles_by_year_region
 
-acs_mfi_srvy_region <- acs_amis |>
-  filter(
-    PERNUM == 1, # One record per household
-    GQ %in% c(1, 2) # Households and group quarters
-  ) |>
-  select(
-    YEAR,
-    PUMA,
-    PERNUM,
-    GQ,
-    ami_group,
-    region,
-    tenure,
-    HHWT,
-    matches("REPWT[0-9]+")
-  ) |>
-  as_survey_design(
-    weight = HHWT,
-    repweights = matches("REPWT[0-9]+"),
-    type = "ACS",
-    mse = TRUE
-  )
-
-
-hh_by_ten_ami_region <- acs_mfi_srvy_region |>
-  group_by(YEAR, ami_group, region, tenure) |>
-  summarize(
-    total_hh = survey_total(),
-    .groups = "drop"
-  ) |>
-  mutate(
-    tenure = (str_extract(tenure, "Own|Rent"))
-  ) |>
-  rename(year = YEAR)
-
-
-  ```
-
-## Write CSVs
-
-Finally we write the CSVs to the data folder for the ACS AMIs and the AMI percentiles by year.
-
-```{r}
-#| label: write_csvs
-write_csv(ami_percentile_by_year, "data/ami_percentile_by_year_long.csv")
-
-write_csv(acs_amis, "data/acs_amis.csv")
-
-write_csv(cost_burden_by_ami, "cost_burden_by_ami.csv")
-```
 
 
 ```{r}
@@ -585,87 +406,9 @@ sdo_con <- connect_to_sdo_db()
 
 DBI::dbWriteTable(
   sdo_con,
-  Id(schema = "econ", table = "hh_by_ten_ami_state"),
-  hh_by_ten_ami_state_pct,
+  Id(schema = "econ", table = "hh_by_ten_ami_us"),
+  hh_by_ten_ami_us,
   overwrite = TRUE
 )
 
-sdo_db_create_table(
-  hh_by_ten_ami_state_pct,
-  con = connect_to_sdo_db(),
-  schema = "econ",
-  table = "hh_by_ten_ami_state",
-  vintage = "2024"
-)
-
-
-hh_by_ten_ami_state_eviews <- hh_by_ten_ami_state |>
-  mutate(
-    ami_group = str_replace(ami_group, "-", "_")
-  ) |>
-  select(-contains("se")) |>
-  pivot_wider(
-    names_from = c(tenure, ami_group),
-    values_from = hh,
-    names_sep = "_"
-  )
-
-write_csv(
-  hh_by_ten_ami_state_eviews,
-  "data/hh_by_ten_ami_state_eviews.csv"
-)
-
-rent_own_cost_state <- acs_mfi_srvy_state |>
-  group_by(YEAR, tenure) |>
-  summarize(cost = survey_quantile(housing_cost, c(0.25, .5, 0.75))) |>
-  pivot_longer(
-    cols = starts_with("cost"),
-    names_to = "cost"
-  ) |>
-  unite("var", tenure, cost, sep = "_") |>
-  pivot_wider(names_from = var, values_from = value)
-
-write_csv(
-  rent_own_cost_state,
-  "data/acs_rent_own.csv"
-)
-
-write_csv(
-  mfi_state |>
-    rename(mfi_state = mfi),
-  "data/acs_mfi_state.csv"
-)
-
-drive_folder = as_id("1TdbwsSvZXVOeDAZUhvl2IF4wAlFr-Qpb")
-drive_put(
-  "data/hh_by_ten_ami_state_eviews.csv",
-  path = drive_folder
-)
-
-drive_put(
-  "data/acs_rent_own.csv",
-  path = drive_folder
-)
-
-drive_put(
-  "data/acs_mfi_state.csv",
-  path = drive_folder
-)
-
-DBI::dbWriteTable(
-  connect_to_sdo_db(),
-  Id(schema = "econ", table = "hh_by_ten_ami_region"),
-  hh_by_ten_ami_region,
-  overwrite = TRUE
-)
-
-write_csv(
-  hh_by_ten_ami_region,
-  "data/hh_by_ten_ami_region.csv"
-)
-
-drive_put(
-  "data/hh_by_ten_ami_region.csv",
-  path = as_id("1sUrHAmHzHFgX0Pbfh--2DhD26t8tn0JP")
-)
 ```
