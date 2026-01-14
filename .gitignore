@@ -2,6 +2,7 @@
 /*.ipynb
 /.ipynb_checkpoints
 /archive/
-/data/
+/data/ipums_parquet/
+/data/ipums_raw/
 /desktop.ini
 .Rproj.user

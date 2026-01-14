@@ -228,8 +228,9 @@ ipums_ddi <- file.path(ipums_dir, ipums_files[2])
 
 # Load the IPUMS data from RDS file if it exists
 if (sdo_drive_check_local(ipums_files, ipums_dir)) {
-  acs_data_us <- read_ipums_ddi(ipums_ddi) |>
-    read_ipums_micro()
+  acs_us_ddi <- read_ipums_ddi(ipums_ddi)
+
+  ipums_us_duckplyr <- read_parquet_duckdb("data/ipums_parquet/", prudence = "lavish")
 } else {
   sdo_drive_download(ipums_files, ipums_dir, project_folder = "households_by_ami")
   if (sdo_drive_check_local(ipums_files, ipums_dir)) {
@@ -275,8 +276,11 @@ if (sdo_drive_check_local(ipums_files, ipums_dir)) {
     ) |>
       submit_extract() |>
       wait_for_extract() |>
-      download_extract() |>
-      read_ipums_micro()
+      download_extract()
+
+    # convert to parquet files by year
+      ipums_us_duckplyr_csv <- read_csv_duckdb("data/ipums_raw/usa_00107.csv.gz", prudence = "stingy")
+    map(c(2000:2024), \(x) ipums_us_duckplyr_csv |> filter(YEAR == x) |> compute_parquet(paste0("data/ipums_parquet/ipums_", x,".parquet")))
 
     sdo_drive_upload(ipums_files, ipums_dir, project_folder = "households_by_ami")
   }
@@ -335,18 +339,123 @@ acs_srvy <- acs_data |>
   )
 
 
-# First create MFI's by PUMA
-mfi_from_pums <- acs_srvy |>
+get_mfi_us <-  function(YEAR) {
+parquet_file <- paste0("data/ipums_parquet/ipums_", YEAR, ".parquet")
+
+  mfi_df <- read_parquet_duckdb(parquet_file) |>
   filter(
+    # YEAR == 2000,
     PERNUM == 1, # One record per household
-    GQ %in% c(1, 2), # Households and group quarters
+    GQ %in% c(1, 2) # Households and group quarters
+  ) |>
+  as_survey_design(
+    weight = HHWT,
+    # repweights = matches("REPWT[0-9]+"),
+    type = "ACS",
+    mse = TRUE
+  ) |>
+  filter(
+    # PERNUM == 1, # One record per household
+    # GQ %in% c(1, 2), # Households and group quarters
     FTOTINC != 9999999, # Exclude missing values
     FTOTINC > 0, # Positive income only
     FAMSIZE >= 2 # Families have 2+ members
   ) |>
-  group_by(YEAR, region) |>
+  group_by(YEAR) |>
   summarize(
     mfi = survey_median(as.numeric(FTOTINC))
+  ) 
+
+  return(mfi_df)
+}
+
+if (!file.exists("data/us_mfi_from_pums_us.parquet")) {
+# First create MFI's by PUMA
+mfi_from_pums_us <- map(2000:2024, get_mfi_us, .progress = TRUE)
+
+  compute_parquet(bind_rows(mfi_from_pums_us), "data/us_mfi_from_pums_us.parquet")
+} else {
+  mfi_from_pums_us <- read_parquet_duckdb("data/us_mfi_from_pums_us.parquet")
+}
+
+acs_amis_us <- ipums_us_duckplyr |>
+  inner_join(
+    mfi_from_pums_us,
+    by = c("YEAR")
+  ) |>
+  mutate(
+    nadults = NUMPREC - NCHILD,
+    hhsize = NUMPREC,
+    household_type_id = (case_when(
+      nadults == 1 & NCHILD == 0 ~ "One adult with no children	",
+      nadults == 1 & NCHILD > 0 ~ "One adult with children",
+      nadults > 1 & NCHILD == 0 ~ "More than one adult with no children",
+      nadults > 1 & NCHILD > 0 ~ "More than one adult with children"
+    )),
+    age_group = cut(
+      AGE,
+      breaks = c(
+        0,
+        18,
+        25,
+        45,
+        65,
+        Inf
+      ),
+      labels = c(
+        "Under 18",
+        "18-24",
+        "25-44",
+        "45-64",
+        "65 and over"
+      ),
+      right = FALSE,
+      ordered_result = TRUE
+    ),
+    hhadj = case_when(
+      hhsize < 4 ~ 1 - (4 - hhsize) * .1,
+      hhsize >= 4 ~ 1 + (hhsize - 4) * .08,
+      .default = 1
+    ),
+    mfi_hh = mfi * hhadj,
+    pct_mfi = HHINCOME / mfi_hh,
+    ami_group = cut(
+      pct_mfi,
+      breaks = c(
+        0,
+        .3,
+        .5,
+        .8,
+        1,
+        Inf
+      ),
+      labels = c(
+        "0-30",
+        "30-50",
+        "50-80",
+        "80-100",
+        "100+"
+      ),
+      right = FALSE,
+      ordered_result = TRUE
+    ),
+    ami_percentile = ceiling(pct_mfi * 10) / 10,
+    tenure = (OWNERSHP),
+    tenure_detail = (OWNERSHPD),
+    housing_cost = case_when(
+      OWNERSHP == 2 ~ RENT * 12,
+      OWNERSHP == 1 ~ OWNCOST * 12,
+      .default = NA_real_
+    ),
+    housing_cost_pct = housing_cost / HHINCOME,
+    cost_burdened_30 = case_when(
+      housing_cost_pct >= .3 ~ TRUE,
+      .default = FALSE
+    ),
+    cost_burdened_50 = case_when(
+      housing_cost_pct >= .5 ~ TRUE,
+      .default = FALSE
+    )
   )
 
 acs_amis <- acs_data |>
