@@ -67,6 +67,7 @@ data_dir <- "data"
 mfi_file <- "statewide_mfis_06_25.csv"
 mfi_loc <- file.path(data_dir, mfi_file)
 mfi_state <- read_csv(mfi_loc)
+
 # # check if file exists and read it if it does
 # if (!drive_check_local(mfi_file, data_dir)) {
 #   drive_download(mfi_file, data_dir, project_folder = "households_by_ami")
@@ -156,9 +157,26 @@ ipums_ddi <- file.path(ipums_dir, ipums_files[2])
 # Load the IPUMS data from RDS file if it exists
 if (sdo_drive_check_local(ipums_files, ipums_dir)) {
   acs_data <- read_ipums_ddi(ipums_ddi) |>
-    read_ipums_micro()
+    read_ipums_micro() |>
+    mutate(
+      puma_year = case_when(
+        YEAR < 2012 ~ "PUMA00",
+        YEAR < 2022 ~ "PUMA10",
+        .default = "PUMA20"
+      )
+    ) |>
+    left_join(
+      xwalk_puma_region |>
+        mutate(PUMA = as.integer(puma)) |>
+        select(-puma),
+      by = c("puma_year", "PUMA")
+    )
 } else {
-  sdo_drive_download(ipums_files, ipums_dir, project_folder = "households_by_ami")
+  sdo_drive_download(
+    ipums_files,
+    ipums_dir,
+    project_folder = "households_by_ami"
+  )
   if (sdo_drive_check_local(ipums_files, ipums_dir)) {
     acs_data <- read_ipums_ddi(ipums_ddi) |>
       read_ipums_micro()
@@ -212,7 +230,11 @@ if (sdo_drive_check_local(ipums_files, ipums_dir)) {
       download_extract() |>
       read_ipums_micro()
 
-    sdo_drive_upload(ipums_files, ipums_dir, project_folder = "households_by_ami")
+    sdo_drive_upload(
+      ipums_files,
+      ipums_dir,
+      project_folder = "households_by_ami"
+    )
   }
 }
 ```
@@ -240,19 +262,6 @@ Cost burdened status is taken by dividing housing costs by household income. Hou
 ```{r}
 #| label: calc_amis
 # join region crosswalk to acs_data
-acs_data <- acs_data |>
-  mutate(
-    puma_year = case_when(
-      YEAR < 2012 ~ "PUMA00",
-      YEAR < 2022 ~ "PUMA10",
-      .default = "PUMA20"
-    )
-  ) |>
-  left_join(
-    xwalk_puma_region |>
-      mutate(PUMA = as.integer(puma)),
-    by = c("puma_year", "PUMA")
-  )
 
 # Create survey design object
 acs_srvy <- acs_data |>
@@ -268,169 +277,127 @@ acs_srvy <- acs_data |>
     mse = TRUE
   )
 
-
-acs_amis <- acs_data |>
-  inner_join(
-    mfi_from_pums,
-    by = c("YEAR", "region")
+# First create MFI's by PUMA
+mfi_from_pums <- acs_srvy |>
+  filter(
+    PERNUM == 1, # One record per household
+    GQ %in% c(1, 2), # Households and group quarters
+    FTOTINC != 9999999, # Exclude missing values
+    FTOTINC > 0, # Positive income only
+    FAMSIZE >= 2 # Families have 2+ members
   ) |>
-  mutate(
-    nadults = NUMPREC - NCHILD,
-    hhsize = NUMPREC,
-    household_type_id = factor(case_when(
-      nadults == 1 & NCHILD == 0 ~ "One adult with no children	",
-      nadults == 1 & NCHILD > 0 ~ "One adult with children",
-      nadults > 1 & NCHILD == 0 ~ "More than one adult with no children",
-      nadults > 1 & NCHILD > 0 ~ "More than one adult with children"
-    )),
-    age_group = cut(
-      AGE,
-      breaks = c(
-        0,
-        18,
-        25,
-        45,
-        65,
-        Inf
-      ),
-      labels = c(
-        "Under 18",
-        "18-24",
-        "25-44",
-        "45-64",
-        "65 and over"
-      ),
-      right = FALSE,
-      ordered_result = TRUE
-    ),
-    hhadj = case_when(
-      hhsize < 4 ~ 1 - (4 - hhsize) * .1,
-      hhsize >= 4 ~ 1 + (hhsize - 4) * .08,
-      .default = 1
-    ),
-    mfi_hh = mfi * hhadj,
-    pct_mfi = HHINCOME / mfi_hh,
-    ami_group = cut(
-      pct_mfi,
-      breaks = c(
-        0,
-        .3,
-        .5,
-        .8,
-        1,
-        Inf
-      ),
-      labels = c(
-        "0-30",
-        "30-50",
-        "50-80",
-        "80-100",
-        "100+"
-      ),
-      right = FALSE,
-      ordered_result = TRUE
-    ),
-    ami_percentile = ceiling(pct_mfi * 10) / 10,
-    tenure = as_factor(OWNERSHP),
-    tenure_detail = as_factor(OWNERSHPD),
-    housing_cost = case_when(
-      OWNERSHP == 2 ~ RENT * 12,
-      OWNERSHP == 1 ~ OWNCOST * 12,
-      .default = NA_real_
-    ),
-    housing_cost_pct = housing_cost / HHINCOME,
-    cost_burdened_30 = case_when(
-      housing_cost_pct >= .3 ~ TRUE,
-      .default = FALSE
-    ),
-    cost_burdened_50 = case_when(
-      housing_cost_pct >= .5 ~ TRUE,
-      .default = FALSE
-    )
-  ) |>
-  zap_labels()
+  group_by(YEAR, region) |>
+  summarize(
+    mfi = survey_median(as.numeric(FTOTINC))
+  )
+```
 
+``` {r}
+fn_calculate_pums <- function(df) {
+  df |>
+    mutate(
+      nadults = NUMPREC - NCHILD,
+      hhsize = NUMPREC,
+      household_type_id = factor(case_when(
+        nadults == 1 & NCHILD == 0 ~ "One adult with no children	",
+        nadults == 1 & NCHILD > 0 ~ "One adult with children",
+        nadults > 1 & NCHILD == 0 ~ "More than one adult with no children",
+        nadults > 1 & NCHILD > 0 ~ "More than one adult with children"
+      )),
+      age_group = cut(
+        AGE,
+        breaks = c(
+          0,
+          18,
+          25,
+          45,
+          65,
+          Inf
+        ),
+        labels = c(
+          "Under 18",
+          "18-24",
+          "25-44",
+          "45-64",
+          "65 and over"
+        ),
+        right = FALSE,
+        ordered_result = TRUE
+      ),
+      hhadj = case_when(
+        hhsize < 4 ~ 1 - (4 - hhsize) * .1,
+        hhsize >= 4 ~ 1 + (hhsize - 4) * .08,
+        .default = 1
+      ),
+      mfi_hh = mfi * hhadj,
+      pct_mfi = HHINCOME / mfi_hh,
+      ami_group = cut(
+        pct_mfi,
+        breaks = c(
+          0,
+          .3,
+          .5,
+          .8,
+          1,
+          Inf
+        ),
+        labels = c(
+          "Less than 30",
+          "30 to 50",
+          "50 to 80",
+          "80 to 100",
+          "Greater than 100"
+        ),
+        right = FALSE,
+        ordered_result = TRUE
+      ),
+      ami_percentile = ceiling(pct_mfi * 10) / 10,
+      tenure = as_factor(OWNERSHP),
+      tenure_detail = as_factor(OWNERSHPD),
+      housing_cost = case_when(
+        OWNERSHP == 2 ~ RENTGRS * 12,
+        OWNERSHP == 1 ~ OWNCOST * 12,
+        .default = NA_real_
+      ),
+      housing_cost_pct = pmin((housing_cost / HHINCOME) * 100, 101),
+      calc_housing_cost = case_when(
+        OWNERSHP == 2 & RENTGRS > 0 & HHINCOME > 0 ~ TRUE,
+        OWNERSHP == 1 & HHINCOME > 0 ~ TRUE,
+        .default = FALSE
+      ),
+      cost_burdened_30 = case_when(
+        housing_cost_pct >= 30 & calc_housing_cost ~ TRUE,
+        .default = FALSE
+      ),
+      cost_burdened_50 = case_when(
+        housing_cost_pct >= 50 & calc_housing_cost ~ TRUE,
+        .default = FALSE
+      )
+    ) |>
+    rename_with(tolower) |>
+    zap_labels()
+}
+
+# acs_amis <- acs_data |>
+#   inner_join(
+#     mfi_from_pums,
+#     by = c("YEAR", "region")
+#   )
 
 acs_amis_state <- acs_data |>
+  mutate(region = "0") |>
   inner_join(
     mfi_state,
     by = c("YEAR" = "year")
   ) |>
-  mutate(
-    nadults = NUMPREC - NCHILD,
-    hhsize = NUMPREC,
-    household_type_id = factor(case_when(
-      nadults == 1 & NCHILD == 0 ~ "One adult with no children	",
-      nadults == 1 & NCHILD > 0 ~ "One adult with children",
-      nadults > 1 & NCHILD == 0 ~ "More than one adult with no children",
-      nadults > 1 & NCHILD > 0 ~ "More than one adult with children"
-    )),
-    age_group = cut(
-      AGE,
-      breaks = c(
-        0,
-        18,
-        25,
-        45,
-        65,
-        Inf
-      ),
-      labels = c(
-        "Under 18",
-        "18-24",
-        "25-44",
-        "45-64",
-        "65 and over"
-      ),
-      right = FALSE,
-      ordered_result = TRUE
-    ),
-    hhadj = case_when(
-      hhsize < 4 ~ 1 - (4 - hhsize) * .1,
-      hhsize >= 4 ~ 1 + (hhsize - 4) * .08,
-      .default = 1
-    ),
-    mfi_hh = mfi * hhadj,
-    pct_mfi = HHINCOME / mfi_hh,
-    ami_group = cut(
-      pct_mfi,
-      breaks = c(
-        0,
-        .3,
-        .5,
-        .8,
-        1,
-        Inf
-      ),
-      labels = c(
-        "0-30",
-        "30-50",
-        "50-80",
-        "80-100",
-        "100+"
-      ),
-      right = FALSE,
-      ordered_result = TRUE
-    ),
-    ami_percentile = ceiling(pct_mfi * 10) / 10,
-    tenure = as_factor(OWNERSHP),
-    tenure_detail = as_factor(OWNERSHPD),
-    housing_cost = case_when(
-      OWNERSHP == 2 ~ RENT * 12,
-      OWNERSHP == 1 ~ OWNCOST * 12,
-      .default = NA_real_
-    ),
-    housing_cost_pct = housing_cost / HHINCOME,
-    cost_burdened_30 = case_when(
-      housing_cost_pct >= .3 ~ TRUE,
-      .default = FALSE
-    ),
-    cost_burdened_50 = case_when(
-      housing_cost_pct >= .5 ~ TRUE,
-      .default = FALSE
-    )
+  fn_calculate_pums()
+
+acs_amis_region <- acs_data |>
+  inner_join(
+    mfi_from_pums,
+    by = c("YEAR", "region")
   ) |>
-  zap_labels()
+  fn_calculate_pums()
 ```
 
 ## Calculate AMI percentiles by year
@@ -439,53 +406,72 @@ Next we calculate the AMI percentiles by year. We do this by grouping the data b
 ```{r}
 #| label: calc_ami_percentiles_by_year_state
 
-acs_mfi_srvy_state <- acs_amis_state |>
-  filter(
-    PERNUM == 1, # One record per household
-    GQ %in% c(1, 2) # Households and group quarters
-  ) |>
-  select(
-    YEAR,
-    PERNUM,
-    GQ,
-    ami_group,
-    tenure,
-    HHWT,
-    RENT,
-    OWNCOST,
-    housing_cost,
-    cost_burdened_30,
-    cost_burdened_50,
-    matches("REPWT[0-9]+")
-  ) |>
-  mutate(
-    tenure = str_to_lower(str_extract(tenure, "Own|Rent"))
-  ) |>
-  as_survey_design(
-    weight = HHWT,
-    repweights = matches("REPWT[0-9]+"),
-    type = "ACS",
-    mse = TRUE
-  )
+fn_create_survey <- function(df) {
+  acs_mfi_srvy <- df |>
+    filter(
+      pernum == 1, # one record per household
+      gq %in% c(1, 2) # households and group quarters
+    ) |>
+    select(
+      year,
+      region,
+      pernum,
+      gq,
+      ami_group,
+      tenure,
+      hhwt,
+      rent,
+      owncost,
+      housing_cost,
+      cost_burdened_30,
+      cost_burdened_50,
+      matches("repwt[0-9]+")
+    ) |>
+    mutate(
+      tenure = str_to_lower(str_extract(tenure, "Own|Rent"))
+    ) |>
+    as_survey_design(
+      weight = hhwt,
+      repweights = matches("repwt[0-9]+"),
+      type = "ACS",
+      mse = TRUE
+    )
 
+  return(acs_mfi_srvy)
+}
 
-hh_by_ten_ami_state <- acs_mfi_srvy_state |>
-  group_by(YEAR, ami_group, tenure) |>
-  summarize(
-    hh = survey_total(),
-    .groups = "drop"
-  ) |>
-  rename(year = YEAR)
+acs_mfi_srvy <- fn_create_survey(bind_rows(acs_amis_state, acs_amis_region))
 
-hh_by_ten_ami_state_pct <- hh_by_ten_ami_state |>
-  filter(!is.na(ami_group)) |>
-  mutate(
-    total_hh = sum(hh),
-    .by = c("year", "tenure")
-  ) |>
-  mutate(
-    pct_hh = hh / total_hh
-  )
+fn_calc_srvy <- function(srvy, hna_region) {
+  cost_burden_df <- srvy |>
+    filter(region == hna_region) |>
+    filter(!is.na(ami_group)) |>
+    group_by(year, region, ami_group, tenure) |>
+    summarize(
+      hh = survey_total(),
+      cost_burdened_30 = survey_total(cost_burdened_30),
+      cost_burdened_50 = survey_total(cost_burdened_50),
+      .groups = "drop"
+    ) |>
+    mutate(
+      total_hh = sum(hh),
+      .by = c(year, region, tenure)
+    ) |>
+    mutate(
+      pct_hh = hh / total_hh,
+      pct_cost_burdened_30 = cost_burdened_30 / total_hh,
+      pct_cost_burdened_50 = cost_burdened_50 / total_hh
+    )
+
+  return(cost_burden_df)
+}
+
+cost_burden_by_ten_ami <- map(
+  as.character(0:4),
+  \(x) fn_calc_srvy(acs_mfi_srvy, x),
+  .progress = TRUE
+) |>
+  bind_rows()
 
 
 ```
@@ -494,76 +480,24 @@ hh_by_ten_ami_state_pct <- hh_by_ten_ami_state |>
 ```{r}
 #| label: cost_burdened_ami_groups
 
-cost_burden_by_ami <- acs_mfi_srvy_state |>
-  group_by(YEAR, tenure, ami_group) |>
-  summarize(
-    total_hh = survey_total(),
-    cost_burdened_30 = survey_total(cost_burdened_30),
-    cost_burdened_50 = survey_total(cost_burdened_50),
-    .groups = "drop"
-  ) |>
-  mutate(
-    pct_cost_burdened_30 = cost_burdened_30 / total_hh,
-    pct_cost_burdened_50 = cost_burdened_50 / total_hh
-  )
+sdo_db_delete_table(
+  con = connect_to_sdo_db(),
+  schema = "econ",
+  table = "hh_by_ten_ami_state_pct"
+)
 
 sdo_db_create_table(
-  cost_burden_by_ami,
+  cost_burden_by_ten_ami |> mutate(tenure = str_to_title(paste0(tenure, "er"))),
   con = connect_to_sdo_db(),
   schema = "econ",
   table = "cost_burden_by_ami",
-  vintage = "2024"
+  vintage = 2024,
+  latest = TRUE
 )
 
-households_ami_tenure <- acs_srvy |>
-  group_by(YEAR, tenure, ami_group) |>
-  summarize(
-    total_hh = survey_total(),
-    .groups = "drop"
-  )
 
 ```
 
-``` {r}
-#| label: calc_ami_percentiles_by_year_region
-
-acs_mfi_srvy_region <- acs_amis |>
-  filter(
-    PERNUM == 1, # One record per household
-    GQ %in% c(1, 2) # Households and group quarters
-  ) |>
-  select(
-    YEAR,
-    PUMA,
-    PERNUM,
-    GQ,
-    ami_group,
-    region,
-    tenure,
-    HHWT,
-    matches("REPWT[0-9]+")
-  ) |>
-  as_survey_design(
-    weight = HHWT,
-    repweights = matches("REPWT[0-9]+"),
-    type = "ACS",
-    mse = TRUE
-  )
-
-
-hh_by_ten_ami_region <- acs_mfi_srvy_region |>
-  group_by(YEAR, ami_group, region, tenure) |>
-  summarize(
-    total_hh = survey_total(),
-    .groups = "drop"
-  ) |>
-  mutate(
-    tenure = (str_extract(tenure, "Own|Rent"))
-  ) |>
-  rename(year = YEAR)
-
-
-  ```
 
 ## Write CSVs
 

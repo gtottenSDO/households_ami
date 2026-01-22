@@ -10,6 +10,7 @@ format:
 ---
 
 # Purpose
+
 This script is to generate a forecast of households by AMI based on the most recent three year average at the state level.
 
 ```{r}
@@ -30,21 +31,27 @@ flexiblas_set_num_threads(parallel::detectCores() - 1)
 ```
 
 # Pull Data from Postgres
+
 ```{r}
 #| label: pull_data
 
 con <- sdodemog::connect_to_sdo_db()
 
-connections::connection_view(con)
-
-hh_by_ten_ami_state <- pull_db_table(
+hh_by_ten_ami <- pull_db_table(
   schema = "econ",
-  table = "hh_by_ten_ami_state"
+  table = "cost_burden_by_ami"
 )
+
 hh_projections <- pull_db_table(
   schema = "estimates",
   table = "household_projections"
 )
+
+xwalk_hna_region <- pull_db_table(
+  "xwalk",
+  "region_hna"
+) |>
+  mutate(region = str_sub(region_code, -1))
 
 ```
 
@@ -55,64 +62,132 @@ Begin by calculating by year the percentage of all households by tenure, and per
 ```{r}
 #| label: process_data
 
-hh_ami_pct <- hh_by_ten_ami_state |>
-  select(year, tenure, ami_group, hh_ami_ten = hh) |>
-  mutate(hh_tot = sum(hh_ami_ten), .by = c(year)) |>
-  mutate(
-    hh_ten = sum(hh_ami_ten),
-    .by = c(year, tenure)
+calc_ami_allocation <- function(df) {
+  hh_ami_pct <- df |>
+    filter(!(is.na(ami_group))) |>
+    select(year, tenure, ami_group, region, hh_ami_ten = hh) |>
+    mutate(hh_tot = sum(hh_ami_ten), .by = c(year, region)) |>
+    mutate(
+      hh_ten = sum(hh_ami_ten),
+      .by = c(year, region, tenure)
+    ) |>
+    mutate(
+      pct_hh_ten = hh_ten / hh_tot,
+      pct_hh_ami_ten = hh_ami_ten / hh_ten
+    )
+
+  hh_ami_pct_fcst <- hh_ami_pct |>
+    filter(year >= max(year) - 2) |>
+    summarize(
+      hh_ami_ten_avg = mean(hh_ami_ten),
+      hh_tot_avg = mean(hh_tot),
+      hh_ten_avg = mean(hh_ten),
+      .by = c(region, tenure, ami_group)
+    ) |>
+    mutate(
+      pct_hh_ten = hh_ten_avg / hh_tot_avg,
+      pct_hh_ami_ten = hh_ami_ten_avg / hh_ten_avg
+    )
+
+  hh_ami_allocation_tbl <- bind_rows(
+    hh_ami_pct |>
+      select(year, region, tenure, ami_group, pct_hh_ten, pct_hh_ami_ten),
+    expand_grid(
+      year = c((max(hh_ami_pct$year) + 1):max(hh_projections$year)),
+      hh_ami_pct_fcst |>
+        select(region, tenure, ami_group, pct_hh_ten, pct_hh_ami_ten)
+    )
+  )
+
+  return(
+    list(
+      "hh_ami_pct" = hh_ami_pct,
+      "hh_ami_pct_fcst" = hh_ami_pct_fcst,
+      "hh_ami_allocation_tbl" = hh_ami_allocation_tbl
+    )
+  )
+}
+
+hh_ami_tbls <- hh_by_ten_ami |>
+  calc_ami_allocation()
+
+hh_ami_forecast <- hh_projections |>
+  filter(
+    area_code == 0,
+    household_type_id == 0,
+    age_group_id == 0
   ) |>
-  mutate(
-    pct_hh_ten = hh_ten / hh_tot,
-    pct_hh_ami_ten = hh_ami_ten / hh_ten
-  )
-
-hh_ami_pct_fcst <- hh_ami_pct |>
-  filter(year >= max(year) - 2) |>
-  summarize(
-    hh_ami_ten_avg = mean(hh_ami_ten),
-    hh_tot_avg = mean(hh_tot),
-    hh_ten_avg = mean(hh_ten),
-    .by = c(tenure, ami_group)
-  ) |>
-  mutate(
-    pct_hh_ten = hh_ten_avg / hh_tot_avg,
-    pct_hh_ami_ten = hh_ami_ten_avg / hh_ten_avg
-  )
-
-hh_ami_allocation_tbl <- bind_rows(
-  hh_ami_pct |>
-    select(year, tenure, ami_group, pct_hh_ten, pct_hh_ami_ten),
-  expand_grid(
-    year = c((max(hh_ami_pct$year) + 1):max(hh_projections$year)),
-    hh_ami_pct_fcst |> select(tenure, ami_group, pct_hh_ten, pct_hh_ami_ten)
-  )
-)
-
-hh_ami_forecast <- hh_projections |> 
-    filter(
-        area_code == 0,
+  mutate(region = "0") |>
+  select(year, region, total_households) |>
+  bind_rows(
+    hh_projections |>
+      filter(
+        area_code != 0,
         household_type_id == 0,
         age_group_id == 0
-    ) |> 
-        left_join(
-        hh_ami_allocation_tbl, by = "year"
-    ) |> 
-    mutate(
-        hh_allocated = total_households * pct_hh_ten * pct_hh_ami_ten
-        )
+      ) |>
+      left_join(
+        xwalk_hna_region |>
+          select(
+            area_code = countyfips,
+            region_code
+          ) |>
+          mutate(region = str_sub(region_code, -1)),
+        by = "area_code"
+      ) |>
+      summarize(
+        total_households = sum(total_households, na.rm = TRUE),
+        .by = c(year, region)
+      )
+  ) |>
+  left_join(
+    hh_ami_tbls$hh_ami_allocation_tbl,
+    by = c("year", "region")
+  ) |>
+  mutate(
+    hh_allocated = total_households * pct_hh_ten * pct_hh_ami_ten
+  )
+
+# hh_ami_tbls_region <- hh_by_ten_region |>
+#   rename(hh = total_hh) |>
+#   calc_ami_allocation()
+
+# hh_ami_forecast_region <-  |>
+#         left_join(
+#         hh_ami_tbls_region$hh_ami_allocation_tbl, by = c("year", "region")
+#     ) |>
+#     mutate(
+#         hh_allocated = total_households * pct_hh_ten * pct_hh_ami_ten
+#         )
+
+# check allocations = total
+hh_ami_forecast |>
+  summarize(
+    hh_allocated = sum(hh_allocated),
+    .by = c(year, region, total_households)
+  ) |>
+  mutate(check = total_households - hh_allocated) |>
+  filter(abs(check) > 1)
 
 ```
+
 
 ```{r}
 #| label: write_data
 
-
 sdodemog::sdo_db_write_table(
-    con,
-    schema = "econ",
-    table = "ami_state_forecast",
-    df = hh_ami_forecast,
-    vintage = 2024
+  connect_to_sdo_db(),
+  schema = "econ",
+  table = "hh_ami_forecast",
+  df = hh_ami_forecast,
+  vintage = 2024,
+  latest = TRUE
 )
+
+
+write_csv(
+  hh_ami_forecast,
+  "data/hh_ami_forecast.csv"
+)
+
 ```
