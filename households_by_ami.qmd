@@ -448,19 +448,19 @@ fn_calc_srvy <- function(srvy, hna_region) {
     filter(!is.na(ami_group)) |>
     group_by(year, region, ami_group, tenure) |>
     summarize(
-      hh = survey_total(),
+      total_hh = survey_total(),
       cost_burdened_30 = survey_total(cost_burdened_30),
       cost_burdened_50 = survey_total(cost_burdened_50),
       .groups = "drop"
     ) |>
     mutate(
-      total_hh = sum(hh),
+      total_hh_ten = sum(total_hh),
       .by = c(year, region, tenure)
     ) |>
     mutate(
-      pct_hh = hh / total_hh,
-      pct_cost_burdened_30 = cost_burdened_30 / total_hh,
-      pct_cost_burdened_50 = cost_burdened_50 / total_hh
+      pct_hh_ten = total_hh / total_hh_ten,
+      pct_cost_burdened_30 = cost_burdened_30 / total_hh_ten,
+      pct_cost_burdened_50 = cost_burdened_50 / total_hh_ten
     )
 
   return(cost_burden_df)

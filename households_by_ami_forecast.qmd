@@ -60,12 +60,41 @@ xwalk_hna_region <- pull_db_table(
 Begin by calculating by year the percentage of all households by tenure, and percentage of households by AMI group within each tenure group.
 
 ```{r}
+#| check region to state totals
+
+state_region_check <- hh_by_ten_ami |>
+  filter(year >= 2021) |>
+  mutate(region_type = if_else(region == "0", "State", "Region")) |>
+  summarize(
+    across(
+      c(cost_burdened_30, cost_burdened_50, total_hh),
+      sum,
+      na.rm = TRUE
+    ),
+    .by = c(
+      model_id,
+      year,
+      # tenure,
+      ami_group,
+      region_type
+    )
+  ) |>
+  pivot_wider(
+    names_from = region_type,
+    values_from = c(cost_burdened_30, cost_burdened_50, total_hh)
+  )
+
+
+```
+
+
+```{r}
 #| label: process_data
 
 calc_ami_allocation <- function(df) {
   hh_ami_pct <- df |>
     filter(!(is.na(ami_group))) |>
-    select(year, tenure, ami_group, region, hh_ami_ten = hh) |>
+    select(year, tenure, ami_group, region, hh_ami_ten = total_hh) |>
     mutate(hh_tot = sum(hh_ami_ten), .by = c(year, region)) |>
     mutate(
       hh_ten = sum(hh_ami_ten),
@@ -111,16 +140,11 @@ calc_ami_allocation <- function(df) {
 hh_ami_tbls <- hh_by_ten_ami |>
   calc_ami_allocation()
 
-hh_ami_forecast <- hh_projections |>
-  filter(
-    area_code == 0,
-    household_type_id == 0,
-    age_group_id == 0
-  ) |>
-  mutate(region = "0") |>
-  select(year, region, total_households) |>
-  bind_rows(
-    hh_projections |>
+```
+
+```{r}
+
+hh_ami_forecast_region <- hh_projections |>
       filter(
         area_code != 0,
         household_type_id == 0,
@@ -138,8 +162,7 @@ hh_ami_forecast <- hh_projections |>
       summarize(
         total_households = sum(total_households, na.rm = TRUE),
         .by = c(year, region)
-      )
-  ) |>
+      ) |> 
   left_join(
     hh_ami_tbls$hh_ami_allocation_tbl,
     by = c("year", "region")
@@ -148,17 +171,27 @@ hh_ami_forecast <- hh_projections |>
     hh_allocated = total_households * pct_hh_ten * pct_hh_ami_ten
   )
 
-# hh_ami_tbls_region <- hh_by_ten_region |>
-#   rename(hh = total_hh) |>
-#   calc_ami_allocation()
+```
 
-# hh_ami_forecast_region <-  |>
-#         left_join(
-#         hh_ami_tbls_region$hh_ami_allocation_tbl, by = c("year", "region")
-#     ) |>
-#     mutate(
-#         hh_allocated = total_households * pct_hh_ten * pct_hh_ami_ten
-#         )
+```{r}
+hh_ami_forecast_state <- hh_ami_forecast_region |> 
+  summarize(
+    region = "0",
+    hh_allocated = sum(hh_allocated),
+    .by = c(year, tenure, ami_group)
+    ) |> 
+      mutate(
+        total_households = sum(hh_allocated),
+        .by = year) |> 
+      mutate(
+      pct_hh_ten = sum(hh_allocated) / total_households,
+      pct_hh_ami_ten = hh_allocated / sum(hh_allocated),
+      .by = c(year,tenure) )
+
+hh_ami_forecast <- bind_rows(
+  hh_ami_forecast_state,
+  hh_ami_forecast_region
+)
 
 # check allocations = total
 hh_ami_forecast |>
