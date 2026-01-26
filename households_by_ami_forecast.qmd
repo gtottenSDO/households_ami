@@ -145,24 +145,24 @@ hh_ami_tbls <- hh_by_ten_ami |>
 ```{r}
 
 hh_ami_forecast_region <- hh_projections |>
-      filter(
-        area_code != 0,
-        household_type_id == 0,
-        age_group_id == 0
+  filter(
+    area_code != 0,
+    household_type_id == 0,
+    age_group_id == 0
+  ) |>
+  left_join(
+    xwalk_hna_region |>
+      select(
+        area_code = countyfips,
+        region_code
       ) |>
-      left_join(
-        xwalk_hna_region |>
-          select(
-            area_code = countyfips,
-            region_code
-          ) |>
-          mutate(region = str_sub(region_code, -1)),
-        by = "area_code"
-      ) |>
-      summarize(
-        total_households = sum(total_households, na.rm = TRUE),
-        .by = c(year, region)
-      ) |> 
+      mutate(region = str_sub(region_code, -1)),
+    by = "area_code"
+  ) |>
+  summarize(
+    total_households = sum(total_households, na.rm = TRUE),
+    .by = c(year, region)
+  ) |>
   left_join(
     hh_ami_tbls$hh_ami_allocation_tbl,
     by = c("year", "region")
@@ -174,19 +174,21 @@ hh_ami_forecast_region <- hh_projections |>
 ```
 
 ```{r}
-hh_ami_forecast_state <- hh_ami_forecast_region |> 
+hh_ami_forecast_state <- hh_ami_forecast_region |>
   summarize(
     region = "0",
     hh_allocated = sum(hh_allocated),
     .by = c(year, tenure, ami_group)
-    ) |> 
-      mutate(
-        total_households = sum(hh_allocated),
-        .by = year) |> 
-      mutate(
-      pct_hh_ten = sum(hh_allocated) / total_households,
-      pct_hh_ami_ten = hh_allocated / sum(hh_allocated),
-      .by = c(year,tenure) )
+  ) |>
+  mutate(
+    total_households = sum(hh_allocated),
+    .by = year
+  ) |>
+  mutate(
+    pct_hh_ten = sum(hh_allocated) / total_households,
+    pct_hh_ami_ten = hh_allocated / sum(hh_allocated),
+    .by = c(year, tenure)
+  )
 
 hh_ami_forecast <- bind_rows(
   hh_ami_forecast_state,
