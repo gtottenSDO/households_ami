@@ -193,7 +193,8 @@ hh_ami_forecast_state <- hh_ami_forecast_region |>
 hh_ami_forecast <- bind_rows(
   hh_ami_forecast_state,
   hh_ami_forecast_region
-)
+) |>
+  arrange(year, region, tenure, ami_group)
 
 # check allocations = total
 hh_ami_forecast |>
@@ -216,6 +217,9 @@ sdodemog::sdo_db_write_table(
   table = "hh_ami_forecast",
   df = hh_ami_forecast,
   vintage = 2024,
+  version = "v3",
+  overwrite = TRUE,
+  use_model_tracking = TRUE,
   latest = TRUE
 )
 
