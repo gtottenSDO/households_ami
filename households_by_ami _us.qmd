@@ -1,5 +1,5 @@
 ---
-title: Households by AMI
+title: Households by AMI US
 bibliography: references.bib
 format:
   html:
@@ -10,6 +10,9 @@ format:
    output: false
 ---
 
+## Data Collection
+
+This script is used to pull the number of households by AMI in the United States using PUMS data via IPUMS using the `ipumsr` package.
 
 
 ```{r}
@@ -31,7 +34,7 @@ library(sdodemog)
 library(RPostgres)
 library(DBI)
 library(googledrive)
-  library(furrr)
+library(furrr)
 
 # Enable parallel processing with FlexiBLAS
 flexiblas_load_backend("OPENBLAS-OPENMP")
@@ -46,7 +49,7 @@ data_dir <- "data"
 
 PUMS data is extracted using IPUMS USA data collection [@Ruggles2024]. The dataset and accompanying application have been created as a way of extracting and standardizing PUMS data for analysis. Data is extracted using the `ipumsr` package [@ipumsr].
 
-First we get a list of all ACS samples, and filter to those with the pattern `us20\d{2}a`. This pattern matches all ACS 1 year samples from 2000 to 2023, and are used to feed the query from IPUMS.
+First we get a list of all ACS samples, and filter to those with the pattern `us20\d{2}a`. This pattern matches all ACS 1 year samples available from 2000 onward, and are used to feed the query from IPUMS. Only samples beginning in 2005 will be used, however, as PUMA data is not available for Colorado prior to that year, and additionally during the period of 2000 to 2004 the ACS was more limited in scope and sample, only surveying 0.4% of the population, as opposed to 1% in years beginning in 2005.
 
 ```{r}
 #| label: ipums_samples
@@ -58,41 +61,63 @@ acs_samples <- get_sample_info("usa") |>
 
 Next an extract is created and processed. The following table includes relevant variables and their definitions:
 
-| Variable  | Description                                 |
-|-----------|---------------------------------------------|
-| STATEFIP  | State FIPS code                             |
-| COUNTYFIP | County FIPS code                            |
-| PUMA      | Public Use Microdata Area code              |
-| NUMPREC   | Number of people in the household           |
-| CPI99     | Consumer Price Index for 1999               |
-| OWNERSHP  | Ownership status of the housing unit        |
-| OWNCOST   | Value of owner-occupied housing units       |
-| RENT      | Gross rent                                  |
-| HHTYPE    | Household type                              |
-| HHINCOME  | Household income                            |
-| INCTOT    | Total income                                |
-| INCWAGE   | Wage or salary income                       |
-| INCBUS00  | Business, farm, and professional income     |
-| INCSS     | Social security income                      |
-| INCWELFR  | Welfare income                              |
-| INCINVST  | Investment income                           |
-| INCSUPP   | Supplemental security income                |
-| INCOTHER  | Other income                                |
-| INCEARN   | Earnings                                    |
-| POVERTY   | Poverty status                              |
-| CBPOVERTY | Child below poverty level                   |
-| AGE       | Age of the person                           |
-| FAMUNIT   | Family unit                                 |
-| FAMSIZE   | Family size                                 |
-| NCHILD    | Number of children in the household         |
-| NCHLT5    | Number of children under 5 years old        |
-| FTOTINC   | Total family income                         |
-| BEDROOMS  | Number of bedrooms                          |
-| REPWT     | Replicate weight (for statistical analysis) |
+| Variable  | Description                                         |
+|-----------|-----------------------------------------------------|
+| YEAR      | Census year                                         |
+| SAMPLE    | IPUMS sample identifier                             |
+| SERIAL    | Household serial number                             |
+| CBSERIAL  | Original Census Bureau household serial number      |
+| NUMPREC   | Number of person records following                  |
+| HHWT      | Household weight                                    |
+| HHTYPE    | Household Type                                      |
+| CLUSTER   | Household cluster for variance estimation           |
+| CPI99     | CPI-U adjustment factor to 1999 dollars             |
+| STATEFIP  | State (FIPS code)                                   |
+| COUNTYFIP | County (FIPS code, identifiable counties only)      |
+| PUMA      | Public Use Microdata Area                           |
+| STRATA    | Household strata for variance estimation            |
+| GQ        | Group quarters status                               |
+| OWNERSHP  | Ownership of dwelling (tenure) \[general version\]  |
+| OWNERSHPD | Ownership of dwelling (tenure) \[detailed version\] |
+| OWNCOST   | Selected monthly owner costs                        |
+| RENT      | Monthly contract rent                               |
+| RENTGRS   | Monthly gross rent                                  |
+| HHINCOME  | Total household income                              |
+| BEDROOMS  | Number of bedrooms                                  |
+| PERNUM    | Person number in sample unit                        |
+| PERWT     | Person weight                                       |
+| FAMUNIT   | Family unit membership                              |
+| FAMSIZE   | Number of own family members in household           |
+| NCHILD    | Number of own children in the household             |
+| NCHLT5    | Number of own children under age 5 in household     |
+| RELATE    | Relationship to household head \[general version\]  |
+| RELATED   | Relationship to household head \[detailed version\] |
+| SEX       | Sex                                                 |
+| AGE       | Age                                                 |
+| RACE      | Race \[general version\]                            |
+| RACED     | Race \[detailed version\]                           |
+| HISPAN    | Hispanic origin \[general version\]                 |
+| HISPAND   | Hispanic origin \[detailed version\]                |
+| BPL       | Birthplace \[general version\]                      |
+| BPLD      | Birthplace \[detailed version\]                     |
+| CITIZEN   | Citizenship status                                  |
+| INCTOT    | Total personal income                               |
+| FTOTINC   | Total family income                                 |
+| INCWAGE   | Wage and salary income                              |
+| INCBUS00  | Business and farm income, 2000                      |
+| INCSS     | Social Security income                              |
+| INCWELFR  | Welfare (public assistance) income                  |
+| INCINVST  | Interest, dividend, and rental income               |
+| INCSUPP   | Supplementary Security Income                       |
+| INCOTHER  | Other income                                        |
+| INCEARN   | Total personal earned income                        |
+| POVERTY   | Poverty status                                      |
+| CBPOVERTY | Poverty status (original Census Bureau calculation) |
+| MOVEDIN   | When occupant moved into residence                  |
 
 : IPUMS Variables
 
-The output of the IPUMS query is a data frame that includes a record for each household in Colorado from the ACS 1-year samples since 2000. Each record represents a person, with the head of household identified as person 1, and all other persons in the household following. This is based on the `rectangular` record format from IPUMS, rather than `hierachal`, as the household records lack necessary data for the analysis, such as person ages, or number of children in the household.
+The output of the IPUMS query is a data frame that includes a record for each household in Colorado from the ACS 1-year samples since 2000. Each record represents a person, with the head of household identified as person 1, and all other persons in the household following. This is based on the `rectangular` record format from IPUMS, rather than `hierachal`, as the household records lack necessary data for the analysis, such as person ages, or number of children in the household. 
 
 ```{r}
 #| label: query_ipums_us
@@ -107,9 +132,16 @@ ipums_ddi <- file.path(ipums_dir, ipums_files[2])
 if (sdo_drive_check_local(ipums_files, ipums_dir)) {
   acs_us_ddi <- read_ipums_ddi(ipums_ddi)
 
-  ipums_us_duckplyr <- read_parquet_duckdb("data/ipums_parquet/", prudence = "lavish")
+  ipums_us_duckplyr <- read_parquet_duckdb(
+    "data/ipums_parquet/",
+    prudence = "lavish"
+  )
 } else {
-  sdo_drive_download(ipums_files, ipums_dir, project_folder = "households_by_ami")
+  sdo_drive_download(
+    ipums_files,
+    ipums_dir,
+    project_folder = "households_by_ami"
+  )
   if (sdo_drive_check_local(ipums_files, ipums_dir)) {
     acs_data_us <- read_ipums_ddi(ipums_ddi) |>
       read_ipums_micro()
@@ -156,17 +188,96 @@ if (sdo_drive_check_local(ipums_files, ipums_dir)) {
       download_extract()
 
     # convert to parquet files by year
-      ipums_us_duckplyr_csv <- read_csv_duckdb("data/ipums_raw/usa_00107.csv.gz", prudence = "stingy")
-    map(c(2000:2024), \(x) ipums_us_duckplyr_csv |> filter(YEAR == x) |> compute_parquet(paste0("data/ipums_parquet/ipums_", x,".parquet")))
+    ipums_us_duckplyr_csv <- read_csv_duckdb(
+      "data/ipums_raw/usa_00107.csv.gz",
+      prudence = "stingy"
+    )
+    map(c(2000:2024), \(x) {
+      ipums_us_duckplyr_csv |>
+        filter(YEAR == x) |>
+        compute_parquet(paste0("data/ipums_parquet/ipums_", x, ".parquet"))
+    })
 
-    sdo_drive_upload(ipums_files, ipums_dir, project_folder = "households_by_ami")
+    sdo_drive_upload(
+      ipums_files,
+      ipums_dir,
+      project_folder = "households_by_ami"
+    )
   }
 }
 ```
 
+### Median Family Income
+
+Median family income must be included in order to assign households into an Area Median Income ("AMI") grouping based on Household Income. There are two potential sources of Median Family Income data - the published AMI published annually by the Department of Housing and Urban Development ("HUD"), or the American Community Survey ("ACS"), created annually by the United States Census Bureau ("CB").
+
+While both HUD and ACS data were obtained and processed, only the ACS data was ultimately used, primarily for comparability to the state and region calculations. HUD data is only available at the state and county levels, and not nationally.
+
+There are benefits and drawbacks to each approach though primarily this is done to align with the rest of the analysis, and because a national MFI does not existed (it could be approximated using weighted averages of state level HUD data, but this would be less accurate). In particular, HUD data is specifically designed for use in housing policy and programs, while ACS median family income is a more general measure of income.
+
+The primary reason for using ACS median family income (in addition to the regional availability) is that it most accurately describes the *actual* income distribution in a given year, as it is based on that specific sample, while the HUD data is estimated annually using the most recently available ACS data and inflation adjusting it forward. Because of this, these amounts won't be the same, and the HUD MFI's will tend to be biased downward in years where incomes are rising faster than inflation, and biased upward in years where incomes are rising slower than inflation or declining. When real incomes are falling (i.e., inflation is rising faster than nominal income), the HUD MFI's will be biased upward relative to actual incomes. We see this arrising in the data.
+
+Ultimately the decision to use ACS MFI's was made based on the desire to have the most accurate representation of income distributions in the United States, and to align with the rest of this analysis. Additionally, a similar method is used in the HUD Consolidated Planning/CHAS dataset, which is commonly used for housing needs assessments, and so this approach more closely aligns with this methodology [@joice_measuring_2014].
+
+#### ACS PUMS
+
+This data needed to be created by calculating the median family income from the ACS PUMS data itself. This is handled by creating a generic function based on design object using the `srvyr` package, and then calculating the median family income by year for each region^[The generic function can also be used to create statewide estimates, however this step is omitted due to the decision to use the PUMA level estimates and aggregate them to the state level].
+
+```{r}
+#| label: calc_mfis
+
+# create function for calculating mfi by year
+get_mfi_us <- function(YEAR) {
+  parquet_file <- paste0("data/ipums_parquet/ipums_", YEAR, ".parquet")
+
+  mfi_df <- read_parquet_duckdb(parquet_file) |>
+    filter(
+      # YEAR == 2000,
+      PERNUM == 1, # One record per household
+      GQ %in% c(1, 2) # Households and group quarters
+    ) |>
+    as_survey_design(
+      weight = HHWT,
+      # repweights = matches("REPWT[0-9]+"),
+      type = "ACS",
+      mse = TRUE
+    ) |>
+    filter(
+      # PERNUM == 1, # One record per household
+      # GQ %in% c(1, 2), # Households and group quarters
+      FTOTINC != 9999999, # Exclude missing values
+      FTOTINC > 0, # Positive income only
+      FAMSIZE >= 2 # Families have 2+ members
+    ) |>
+    group_by(YEAR) |>
+    summarize(
+      mfi = survey_median(as.numeric(FTOTINC))
+    )
+
+  return(mfi_df)
+}
+
+# load data if saved otherwise calculate for all years
+if (!file.exists("data/us_mfi_from_pums_us.parquet")) {
+  # First create MFI's by PUMA
+  mfi_from_pums_us <- map(2000:2024, get_mfi_us, .progress = TRUE)
+
+  compute_parquet(
+    bind_rows(mfi_from_pums_us),
+    "data/us_mfi_from_pums_us.parquet"
+  )
+} else {
+  mfi_from_pums_us <- read_parquet_duckdb("data/us_mfi_from_pums_us.parquet") |>
+    collect()
+}
+
+```
+
+
 ### Modify IPUMS Data
 
 Next a series of calculations are performed to modify the IPUMS data to be more useful for analysis. The following table includes the variables generated and their descriptions.
+
 
 | Variable Name | Description |
 |--------------------------------------|----------------------------------|
@@ -183,221 +294,193 @@ Next a series of calculations are performed to modify the IPUMS data to be more 
 
 Of particular importance is the method for calculating percentage of median family income, which is based on the adjusted median family income as determined by household size. This is done by first applying an adjustment factor based on Median Family Income (based on HUD calculations), and then applying this adjustment factor to actual Median Family Income, to get a size adjusted MFI that household income can be compared to. Household income is then divided by this adjusted MFI to get the percentage of median family income, used for binning and grouping.
 
-Cost burdened status is taken by dividing housing costs by household income. Housing costs are based either on the `RENT`^[Note: the `RENT` variable provided by IPUMS represents monthly contract rents, which may or may not include utilities, based on ] variable for renter households, or the `OWNCOST` variable for owner households, and are assigned based on tenure of the household. Housing costs are each reported on a monthly basis, and so must be annualized by multiplying by 12, prior to dividing by household income.
-```{r}
-#| label: calc_mfis
+Cost burdened status is taken by dividing housing costs by household income. Housing costs are based either on the `RENT`[^1] variable for renter households, or the `OWNCOST` variable for owner households, and are assigned based on tenure of the household. Housing costs are each reported on a monthly basis, and so must be annualized by multiplying by 12, prior to dividing by household income.
 
-# create function for calculating mfi by year
-get_mfi_us <-  function(YEAR) {
-parquet_file <- paste0("data/ipums_parquet/ipums_", YEAR, ".parquet")
+[^1]: Note: the `RENT` variable provided by IPUMS represents monthly contract rents, which may or may not include utilities, based on
 
-  mfi_df <- read_parquet_duckdb(parquet_file) |>
-  filter(
-    # YEAR == 2000,
-    PERNUM == 1, # One record per household
-    GQ %in% c(1, 2) # Households and group quarters
-  ) |>
-  as_survey_design(
-    weight = HHWT,
-    # repweights = matches("REPWT[0-9]+"),
-    type = "ACS",
-    mse = TRUE
-  ) |>
-  filter(
-    # PERNUM == 1, # One record per household
-    # GQ %in% c(1, 2), # Households and group quarters
-    FTOTINC != 9999999, # Exclude missing values
-    FTOTINC > 0, # Positive income only
-    FAMSIZE >= 2 # Families have 2+ members
-  ) |>
-  group_by(YEAR) |>
-  summarize(
-    mfi = survey_median(as.numeric(FTOTINC))
-  ) 
-
-  return(mfi_df)
-}
-
-# load data if saved otherwise calculate for all years
-if (!file.exists("data/us_mfi_from_pums_us.parquet")) {
-# First create MFI's by PUMA
-mfi_from_pums_us <- map(2000:2024, get_mfi_us, .progress = TRUE)
-
-  compute_parquet(bind_rows(mfi_from_pums_us), "data/us_mfi_from_pums_us.parquet")
-} else {
-  mfi_from_pums_us <- read_parquet_duckdb("data/us_mfi_from_pums_us.parquet") |> collect()
-}
-
-```
-
+A generic function is created to perform these calculations, and then applied to both the state-level and region-level datasets.
 ``` {r}
 #| label: calc_amis
 
 # create function for calculating necessary variables and adding them to acs_amis_us
 prep_amis <- function(mfi_year, mfi) {
   acs_amis_us <- ipums_us_duckplyr |>
-  filter(YEAR == mfi_year) |>
-  mutate(
-    nadults = NUMPREC - NCHILD,
-    hhsize = NUMPREC,
-    household_type_id = (case_when(
-      nadults == 1 & NCHILD == 0 ~ "One adult with no children	",
-      nadults == 1 & NCHILD > 0 ~ "One adult with children",
-      nadults > 1 & NCHILD == 0 ~ "More than one adult with no children",
-      nadults > 1 & NCHILD > 0 ~ "More than one adult with children"
-    )),
-    age_group = as.character(
-      cut(
-      AGE,
-      breaks = c(
-        0,
-        18,
-        25,
-        45,
-        65,
-        Inf
+    filter(YEAR == mfi_year) |>
+    mutate(
+      nadults = NUMPREC - NCHILD,
+      hhsize = NUMPREC,
+      household_type_id = (case_when(
+        nadults == 1 & NCHILD == 0 ~ "One adult with no children	",
+        nadults == 1 & NCHILD > 0 ~ "One adult with children",
+        nadults > 1 & NCHILD == 0 ~ "More than one adult with no children",
+        nadults > 1 & NCHILD > 0 ~ "More than one adult with children"
+      )),
+      age_group = as.character(
+        cut(
+          AGE,
+          breaks = c(
+            0,
+            18,
+            25,
+            45,
+            65,
+            Inf
+          ),
+          labels = c(
+            "Under 18",
+            "18-24",
+            "25-44",
+            "45-64",
+            "65 and over"
+          ),
+          right = FALSE,
+          ordered_result = FALSE
+        )
       ),
-      labels = c(
-        "Under 18",
-        "18-24",
-        "25-44",
-        "45-64",
-        "65 and over"
+      hhadj = case_when(
+        hhsize < 4 ~ 1 - (4 - hhsize) * .1,
+        hhsize >= 4 ~ 1 + (hhsize - 4) * .08,
+        .default = 1
       ),
-      right = FALSE,
-      ordered_result = FALSE
+      mfi_hh = mfi * hhadj,
+      pct_mfi = HHINCOME / mfi_hh,
+      ami_group = as.character(
+        cut(
+          pct_mfi,
+          breaks = c(
+            0,
+            .3,
+            .5,
+            .8,
+            1,
+            Inf
+          ),
+          labels = c(
+            "Less than 30",
+            "30 to 50",
+            "50 to 80",
+            "80 to 100",
+            "Greater than 100"
+          ),
+          right = FALSE,
+          ordered_result = FALSE
+        )
+      ),
+      ami_percentile = ceiling(pct_mfi * 10) / 10,
+      tenure = case_when(
+        OWNERSHP == 1 ~ "Owner",
+        OWNERSHP == 2 ~ "Renter",
+        TRUE ~ "Other"
+      ),
+      # tenure_detail = (OWNERSHPD),
+      housing_cost = case_when(
+        OWNERSHP == 2 ~ RENT * 12,
+        OWNERSHP == 1 ~ OWNCOST * 12,
+        .default = NA_real_
+      ),
+      housing_cost_pct = housing_cost / HHINCOME,
+      cost_burdened_30 = case_when(
+        housing_cost_pct >= .3 ~ TRUE,
+        .default = FALSE
+      ),
+      cost_burdened_50 = case_when(
+        housing_cost_pct >= .5 ~ TRUE,
+        .default = FALSE
+      )
     )
-    ),
-    hhadj = case_when(
-      hhsize < 4 ~ 1 - (4 - hhsize) * .1,
-      hhsize >= 4 ~ 1 + (hhsize - 4) * .08,
-      .default = 1
-    ),
-    mfi_hh = mfi * hhadj,
-    pct_mfi = HHINCOME / mfi_hh,
-    ami_group = as.character(
-      cut(
-      pct_mfi,
-      breaks = c(
-        0,
-        .3,
-        .5,
-        .8,
-        1,
-        Inf
-      ),
-      labels = c(
-        "Less than 30",
-        "30 to 50",
-        "50 to 80",
-        "80 to 100",
-        "Greater than 100"
-      ),
-      right = FALSE,
-      ordered_result = FALSE
-    )
-    ),
-    ami_percentile = ceiling(pct_mfi * 10) / 10,
-    tenure = case_when(
-      OWNERSHP == 1 ~ "Owner",
-      OWNERSHP == 2 ~ "Renter",
-      TRUE ~ "Other"
-    ),
-    # tenure_detail = (OWNERSHPD),
-    housing_cost = case_when(
-      OWNERSHP == 2 ~ RENT * 12,
-      OWNERSHP == 1 ~ OWNCOST * 12,
-      .default = NA_real_
-    ),
-    housing_cost_pct = housing_cost / HHINCOME,
-    cost_burdened_30 = case_when(
-      housing_cost_pct >= .3 ~ TRUE,
-      .default = FALSE
-    ),
-    cost_burdened_50 = case_when(
-      housing_cost_pct >= .5 ~ TRUE,
-      .default = FALSE
-    )
-  )
 }
 
 if (!file.exists("data/ami_parquet/ami_2000mfi.parquet")) {
-  acs_us <- map2(mfi_from_pums_us$YEAR, mfi_from_pums_us$mfi, ~ prep_amis(.x, .y) |> compute_parquet(paste0("data/ami_parquet/ami_", .x, "mfi.parquet")), .progress = TRUE)
+  acs_us <- map2(
+    mfi_from_pums_us$YEAR,
+    mfi_from_pums_us$mfi,
+    ~ prep_amis(.x, .y) |>
+      compute_parquet(paste0("data/ami_parquet/ami_", .x, "mfi.parquet")),
+    .progress = TRUE
+  )
 }
 
 rm(ipums_us_duckplyr)
 ```
 
+
 ## Calculate AMI percentiles by year
 
-Next we calculate the AMI percentiles by year. We do this by grouping the data by year, household type, AMI percentile, AMI group^[While this is duplicative with AMI percentiles it makes future analysis simpler], age group, cost burdened 30, cost burdened 50, tenure, tenure detail, and household size. We then calculate the total household weight for each group. We also join the median family income (MFI) for each year.
+Next we calculate the AMI percentiles by year. We do this by grouping the data by year, household type, AMI percentile, AMI group[^2], age group, cost burdened 30, cost burdened 50, tenure, tenure detail, and household size. We then calculate the total household weight for each group. We also join the median family income (MFI) for each year.
+
+[^2]: While this is duplicative with AMI percentiles it makes future analysis simpler
+
 ```{r}
 #| label: calc_ami_percentiles_by_year_state
 ami_parquet_files <- list.files("data/ami_parquet/", full.names = TRUE)
 
 create_acs_mfi_srvy_us <- function(file) {
-acs_mfi_srvy_us <- read_parquet_duckdb(file) |>
-  # collect() |> 
-  filter(
-    PERNUM == 1, # One record per household
-    GQ %in% c(1, 2) # Households and group quarters
-  ) |>
-  select(
-    YEAR,
-    PERNUM,
-    GQ,
-    ami_group,
-    tenure,
-    HHWT,
-    RENT,
-    OWNCOST,
-    housing_cost,
-    cost_burdened_30,
-    cost_burdened_50
-  ) |>
-  as_survey_design(
-    weight = HHWT,
-    type = "ACS",
-    mse = TRUE
-  )
+  acs_mfi_srvy_us <- read_parquet_duckdb(file) |>
+    # collect() |>
+    filter(
+      PERNUM == 1, # One record per household
+      GQ %in% c(1, 2) # Households and group quarters
+    ) |>
+    select(
+      YEAR,
+      PERNUM,
+      GQ,
+      ami_group,
+      tenure,
+      HHWT,
+      RENT,
+      OWNCOST,
+      housing_cost,
+      cost_burdened_30,
+      cost_burdened_50
+    ) |>
+    as_survey_design(
+      weight = HHWT,
+      type = "ACS",
+      mse = TRUE
+    )
 }
 
 calc_amis <- function(acs_srvy) {
-ami_df <- acs_srvy |>
-  group_by(YEAR, tenure, ami_group) |>
-  summarize(
-    total_hh = survey_total(),
-    cost_burdened_30 = survey_total(cost_burdened_30),
-    cost_burdened_50 = survey_total(cost_burdened_50),
-    .groups = "drop"
-  ) |>
-  mutate(
-    pct_cost_burdened_30 = cost_burdened_30 / total_hh,
-    pct_cost_burdened_50 = cost_burdened_50 / total_hh
-  )
+  ami_df <- acs_srvy |>
+    group_by(YEAR, tenure, ami_group) |>
+    summarize(
+      total_hh = survey_total(),
+      cost_burdened_30 = survey_total(cost_burdened_30),
+      cost_burdened_50 = survey_total(cost_burdened_50),
+      .groups = "drop"
+    ) |>
+    mutate(
+      pct_cost_burdened_30 = cost_burdened_30 / total_hh,
+      pct_cost_burdened_50 = cost_burdened_50 / total_hh
+    )
 
   return(ami_df)
 }
 
-# hh_by_ten_ami_us <- map(ami_parquet_files[2], ~ create_acs_mfi_srvy_us(.x) |> calc_amis(), .progress = TRUE) |> 
-  # bind_rows()
+# hh_by_ten_ami_us <- map(ami_parquet_files[2], ~ create_acs_mfi_srvy_us(.x) |> calc_amis(), .progress = TRUE) |>
+# bind_rows()
 
 # set up a multisession plan, then parallel map over files
 
-  plan(multisession, workers = parallel::detectCores() - 1)
-  
-  process_file <- function(file) {
-    create_acs_mfi_srvy_us(file) |> calc_amis()
-  }
-  
-  hh_by_ten_ami_us <- future_map_dfr(ami_parquet_files, process_file, .progress = TRUE) |> 
-    rename_with(tolower)
-  # plan(sequential)  # reset
+plan(multisession, workers = parallel::detectCores() - 1)
 
+process_file <- function(file) {
+  create_acs_mfi_srvy_us(file) |> calc_amis()
+}
+
+hh_by_ten_ami_us <- future_map_dfr(
+  ami_parquet_files,
+  process_file,
+  .progress = TRUE
+) |>
+  rename_with(tolower)
+# plan(sequential)  # reset
 
 ```
+## Write to SDO Database
 
-
+Finally, the resulting data frame is written to the SDO database in the `econ.cost_burden_by_ami_us` table, using vintage 2024 and marking it as the latest data.
 
 
 ```{r}
@@ -406,7 +489,7 @@ sdo_con <- connect_to_sdo_db()
 
 DBI::dbWriteTable(
   sdo_con,
-  Id(schema = "econ", table = "hh_by_ten_ami_us"),
+  Id(schema = "econ", table = "cost_burden_by_ami_us"),
   hh_by_ten_ami_us,
   overwrite = TRUE
 )
