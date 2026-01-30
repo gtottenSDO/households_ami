@@ -1,34 +1,17 @@
 ---
 title: Households by AMI Forecast
-format:
-  html:
-   code-fold: true
-   code-summary: "Show the code"
-   code-tools: true
-   toc: true
-   output: false
 ---
 
 # Purpose
+// ...existing code...
+```{r}
+#| label: setup
+source("_common.R")
+```
+// ...existing code...
 
 This script is to generate a forecast of households by AMI based on the most recent three year average at the state level.
 
-```{r}
-#| label: setup
-
-library(tidyverse)
-library(flexiblas)
-library(sdotools)
-library(sdodemog)
-library(googledrive)
-library(DBI)
-library(RPostgres)
-
-# Enable parallel processing with FlexiBLAS
-flexiblas_load_backend("OPENBLAS-OPENMP")
-flexiblas_set_num_threads(parallel::detectCores() - 1)
-
-```
 
 # Pull Data from Postgres
 

@@ -1,13 +1,6 @@
 ---
 title: Households by AMI
-bibliography: references.bib
-format:
-  html:
-   code-fold: true
-   code-summary: "Show the code"
-   code-tools: true
-   toc: true
-   output: false
+
 ---
 
 ## Statutory Requirements
@@ -24,31 +17,17 @@ This script is used to pull the number of households by AMI in Colorado using PU
 
 ```{r}
 #| label: setup
-# NOTE: To load data, you must download both the extract's data and the DDI
-# and also set the working directory to the folder with these files (or change the path below).
-if (!require("ipumsr")) {
-  stop(
-    "Reading IPUMS data into R requires the ipumsr package. It can be installed using the following command: install.packages('ipumsr')"
-  )
-}
-library(tidyverse)
+source("_common.R")
+library(ipumsr)
 library(srvyr)
 library(tidycensus)
-library(flexiblas)
-library(sdotools)
 library(duckplyr)
-library(sdodemog)
-library(RPostgres)
-library(DBI)
-library(googledrive)
-
-# Enable parallel processing with FlexiBLAS
-flexiblas_load_backend("OPENBLAS-OPENMP")
-flexiblas_set_num_threads(parallel::detectCores() - 1)
-
-# get hud IL data
 library(hudr)
+
 hud_key <- Sys.getenv("HUD_API_KEY")
+if (identical(hud_key, "")) {
+  stop("HUD_API_KEY is not set in the environment.")
+}
 
 # load region crosswalk from sdo database
 xwalk_puma_region <- pull_db_table("xwalk", "hna_puma_region")
@@ -159,11 +138,13 @@ if (sdo_drive_check_local(ipums_files, ipums_dir)) {
     # use lowercase variable names
     rename_with(tolower)
 } else {
-  sdo_drive_download(
-    ipums_files,
-    ipums_dir,
-    project_folder = "households_by_ami"
-  )
+  with_drive_access({
+    sdo_drive_download(
+      ipums_files,
+      ipums_dir,
+      project_folder = "households_by_ami"
+    )
+  })
   if (sdo_drive_check_local(ipums_files, ipums_dir)) {
     acs_data <- read_ipums_ddi(ipums_ddi) |>
       read_ipums_micro()
@@ -217,11 +198,13 @@ if (sdo_drive_check_local(ipums_files, ipums_dir)) {
       download_extract() |>
       read_ipums_micro()
 
-    sdo_drive_upload(
-      ipums_files,
-      ipums_dir,
-      project_folder = "households_by_ami"
-    )
+    with_drive_access({
+      sdo_drive_upload(
+        ipums_files,
+        ipums_dir,
+        project_folder = "households_by_ami"
+      )
+    })
   }
 }
 
@@ -578,13 +561,15 @@ Finally, the resulting data frame is written to the SDO database in the `econ.co
 ```{r}
 #| label: cost_burdened_ami_groups
 
-sdo_db_write_table(
-  cost_burden_by_ten_ami,
-  con = connect_to_sdo_db(),
-  schema = "econ",
-  table = "cost_burden_by_ami",
-  vintage = 2024,
-  latest = TRUE
-)
+with_db_writes({
+  sdo_db_write_table(
+    cost_burden_by_ten_ami,
+    con = connect_to_sdo_db(),
+    schema = "econ",
+    table = "cost_burden_by_ami",
+    vintage = 2024,
+    latest = TRUE
+  )
+})
 
 ```

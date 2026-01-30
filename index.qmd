@@ -1,0 +1,47 @@
+---
+title: "Colorado Households by AMI"
+description: |
+  Historic estimates, forecasts, and national context for Colorado
+  households by Area Median Income (AMI) and tenure using ACS PUMS
+  microdata and State Demography Office projections.
+---
+
+## About this project
+
+The Colorado State Demography Office is assembling a reproducible workflow
+to estimate historic households by Area Median Income (AMI) and tenure,
+then forecast future demand informed by SDO household projections. These
+reports are organized as a Quarto website so the analyses share consistent
+formatting, navigation, and metadata.
+
+- **Colorado Historical** &mdash; constructs the ACS PUMS microdata pipeline,
+  calculates AMI groupings, and loads results to the `econ.cost_burden_by_ami`
+  table.
+- **Forecast** &mdash; allocates SDO household projections into AMI-by-tenure
+  groups using the recent three-year average distribution.
+- **United States** &mdash; reproduces the historical pipeline for the U.S.
+  to provide a national reference point.
+
+## Data requirements
+
+Rendering the full site requires network access and credentials for:
+
+- SDO Postgres (read/write to `econ` and `estimates` schemas)
+- Google Drive project folder `households_by_ami`
+- IPUMS extracts `usa_00104` and `usa_00107`
+- HUD API key available as `HUD_API_KEY`
+
+Local disk storage under `data/` stores cached extracts, parquet outputs,
+and CSV exports. Large intermediate objects can exhaust memory; the
+`flexiblas` configuration in the shared setup file constrains thread usage.
+
+## Rendering the site
+
+1. Install Quarto 1.4 or later and required R packages (see README).
+2. Place secrets in `.Renviron` (database URL, HUD key, Google tokens).
+3. Run `quarto render` from the project root to build all pages.
+4. Use `quarto preview` for iterative development with live reload.
+
+If data access is unavailable, individual pages can be rendered with
+`quarto render households_by_ami.qmd --execute-dir .` to reuse existing
+cached outputs.

@@ -1,0 +1,41 @@
+project:
+  type: website
+
+website:
+  title: "Households by AMI"
+  navbar:
+    left:
+      - file: index.qmd
+        text: Overview
+      - file: households_by_ami.qmd
+        text: Colorado Historical
+      - file: households_by_ami_forecast.qmd
+        text: Forecast
+      - file: households_by_ami_us.qmd
+        text: United States
+  sidebar:
+    style: docked
+    search: true
+    contents:
+      - section: "Colorado"
+        contents:
+          - households_by_ami.qmd
+          - households_by_ami_forecast.qmd
+      - section: "United States"
+        contents:
+          - households_by_ami_us.qmd
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    code-fold: true
+    code-summary: "Show code"
+    number-sections: false
+
+execute:
+  freeze: auto
+  warning: false
+  eval: false
+
+bibliography: references.bib

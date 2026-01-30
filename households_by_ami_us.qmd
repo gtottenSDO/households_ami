@@ -1,13 +1,5 @@
 ---
 title: Households by AMI US
-bibliography: references.bib
-format:
-  html:
-   code-fold: true
-   code-summary: "Show the code"
-   code-tools: true
-   toc: true
-   output: false
 ---
 
 ## Data Collection
@@ -15,34 +7,20 @@ format:
 This script is used to pull the number of households by AMI in the United States using PUMS data via IPUMS using the `ipumsr` package.
 
 
+// ...existing code...
 ```{r}
 #| label: setup
-# NOTE: To load data, you must download both the extract's data and the DDI
-# and also set the working directory to the folder with these files (or change the path below).
-if (!require("ipumsr")) {
-  stop(
-    "Reading IPUMS data into R requires the ipumsr package. It can be installed using the following command: install.packages('ipumsr')"
-  )
-}
-library(tidyverse)
+source("_common.R")
+library(ipumsr)
 library(srvyr)
 library(tidycensus)
-library(flexiblas)
-library(sdotools)
 library(duckplyr)
-library(sdodemog)
-library(RPostgres)
-library(DBI)
-library(googledrive)
 library(furrr)
 
-# Enable parallel processing with FlexiBLAS
-flexiblas_load_backend("OPENBLAS-OPENMP")
-flexiblas_set_num_threads(parallel::detectCores() - 1)
-
 data_dir <- "data"
-
-```
+``
+`
+// ...existing code...
 
 
 ## Household Data (IPUMS)
@@ -477,7 +455,8 @@ hh_by_ten_ami_us <- future_map_dfr(
   rename_with(tolower)
 # plan(sequential)  # reset
 
-```
+`
+``
 ## Write to SDO Database
 
 Finally, the resulting data frame is written to the SDO database in the `econ.cost_burden_by_ami_us` table, using vintage 2024 and marking it as the latest data.
