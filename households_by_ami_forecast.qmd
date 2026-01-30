@@ -32,6 +32,8 @@ flexiblas_set_num_threads(parallel::detectCores() - 1)
 
 # Pull Data from Postgres
 
+The necessary tables are stored in the SDO Postgres database.
+
 ```{r}
 #| label: pull_data
 
@@ -60,7 +62,7 @@ xwalk_hna_region <- pull_db_table(
 Begin by calculating by year the percentage of all households by tenure, and percentage of households by AMI group within each tenure group.
 
 ```{r}
-#| check region to state totals
+#| label: check_region_to_state_totals
 
 state_region_check <- hh_by_ten_ami |>
   filter(year >= 2021) |>
@@ -86,7 +88,6 @@ state_region_check <- hh_by_ten_ami |>
 
 
 ```
-
 
 ```{r}
 #| label: process_data
@@ -206,7 +207,6 @@ hh_ami_forecast |>
   filter(abs(check) > 1)
 
 ```
-
 
 ```{r}
 #| label: write_data
