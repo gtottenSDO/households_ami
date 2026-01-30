@@ -240,7 +240,8 @@ div.csl-indent {
     <h2 id="toc-title">On this page</h2>
    
   <ul>
-  <li><a href="#data-collection" id="toc-data-collection" class="nav-link active" data-scroll-target="#data-collection">Data Collection</a>
+  <li><a href="#data-collection" id="toc-data-collection" class="nav-link active" data-scroll-target="#data-collection">Data Collection</a></li>
+  <li><a href="#household-data-ipums" id="toc-household-data-ipums" class="nav-link" data-scroll-target="#household-data-ipums">Household Data (IPUMS)</a>
   <ul class="collapse">
   <li><a href="#median-family-income" id="toc-median-family-income" class="nav-link" data-scroll-target="#median-family-income">Median Family Income</a></li>
   <li><a href="#modify-ipums-data" id="toc-modify-ipums-data" class="nav-link" data-scroll-target="#modify-ipums-data">Modify IPUMS Data</a></li>
@@ -274,7 +275,6 @@ div.csl-indent {
 <section id="data-collection" class="level2">
 <h2 class="anchored" data-anchor-id="data-collection">Data Collection</h2>
 <p>This script is used to pull the number of households by AMI in the United States using PUMS data via IPUMS using the <code>ipumsr</code> package.</p>
-<p>// …existing code…</p>
 <div class="cell">
 <details class="code-fold">
 <summary>Show code</summary>
@@ -285,19 +285,14 @@ div.csl-indent {
 <span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(duckplyr)</span>
 <span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(furrr)</span>
 <span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>data_dir <span class="ot">&lt;-</span> <span class="st">"data"</span></span>
-<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="st">``</span></span>
-<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="st">`</span></span>
-<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="at">// ...existing code...</span></span>
-<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a><span class="at">## Household Data (IPUMS)</span></span>
-<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a><span class="at">PUMS data is extracted using IPUMS USA data collection [@Ruggles2024]. The dataset and accompanying application have been created as a way of extracting and standardizing PUMS data for analysis. Data is extracted using the </span><span class="st">`</span>ipumsr<span class="st">`</span><span class="at"> package [@ipumsr].</span></span>
-<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a><span class="at">First we get a list of all ACS samples, and filter to those with the pattern </span><span class="st">`</span>us20\d{<span class="dv">2</span>}a<span class="st">`</span><span class="at">. This pattern matches all ACS 1 year samples available from 2000 onward, and are used to feed the query from IPUMS. Only samples beginning in 2005 will be used, however, as PUMA data is not available for Colorado prior to that year, and additionally during the period of 2000 to 2004 the ACS was more limited in scope and sample, only surveying 0.4% of the population, as opposed to 1% in years beginning in 2005.</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>data_dir <span class="ot">&lt;-</span> <span class="st">"data"</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </details>
 </div>
+</section>
+<section id="household-data-ipums" class="level2">
+<h2 class="anchored" data-anchor-id="household-data-ipums">Household Data (IPUMS)</h2>
+<p>PUMS data is extracted using IPUMS USA data collection <span class="citation" data-cites="Ruggles2024">(<a href="#ref-Ruggles2024" role="doc-biblioref">Ruggles et al. 2024</a>)</span>. The dataset and accompanying application have been created as a way of extracting and standardizing PUMS data for analysis. Data is extracted using the <code>ipumsr</code> package <span class="citation" data-cites="ipumsr">(<a href="#ref-ipumsr" role="doc-biblioref">Greg Freedman Ellis, Derek Burk, and Finn Roberts 2024</a>)</span>.</p>
+<p>First we get a list of all ACS samples, and filter to those with the pattern <code>us20\d{2}a</code>. This pattern matches all ACS 1 year samples available from 2000 onward, and are used to feed the query from IPUMS. Only samples beginning in 2005 will be used, however, as PUMA data is not available for Colorado prior to that year, and additionally during the period of 2000 to 2004 the ACS was more limited in scope and sample, only surveying 0.4% of the population, as opposed to 1% in years beginning in 2005.</p>
 <div class="cell">
 <details class="code-fold">
 <summary>Show code</summary>
@@ -910,23 +905,29 @@ div.csl-indent {
 <span id="cb6-64"><a href="#cb6-64" aria-hidden="true" tabindex="-1"></a><span class="co"># plan(sequential)  # reset</span></span>
 <span id="cb6-65"><a href="#cb6-65" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb6-66"><a href="#cb6-66" aria-hidden="true" tabindex="-1"></a><span class="st">`</span></span>
-<span id="cb6-67"><a href="#cb6-67" aria-hidden="true" tabindex="-1"></a><span class="st">``</span></span>
-<span id="cb6-68"><a href="#cb6-68" aria-hidden="true" tabindex="-1"></a><span class="at">## Write to SDO Database</span></span>
-<span id="cb6-69"><a href="#cb6-69" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb6-70"><a href="#cb6-70" aria-hidden="true" tabindex="-1"></a><span class="at">Finally, the resulting data frame is written to the SDO database in the </span><span class="st">`</span>econ.cost_burden_by_ami_us<span class="st">`</span><span class="at"> table, using vintage 2024 and marking it as the latest data.</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-</details>
-</div>
-<div class="cell">
-<details class="code-fold">
-<summary>Show code</summary>
-<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>sdo_con <span class="ot">&lt;-</span> <span class="fu">connect_to_sdo_db</span>()</span>
-<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>DBI<span class="sc">::</span><span class="fu">dbWriteTable</span>(</span>
-<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>  sdo_con,</span>
-<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>  <span class="fu">Id</span>(<span class="at">schema =</span> <span class="st">"econ"</span>, <span class="at">table =</span> <span class="st">"cost_burden_by_ami_us"</span>),</span>
-<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>  hh_by_ten_ami_us,</span>
-<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">overwrite =</span> <span class="cn">TRUE</span></span>
-<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<span id="cb6-67"><a href="#cb6-67" aria-hidden="true" tabindex="-1"></a><span class="st">`</span></span>
+<span id="cb6-68"><a href="#cb6-68" aria-hidden="true" tabindex="-1"></a><span class="st">`</span></span>
+<span id="cb6-69"><a href="#cb6-69" aria-hidden="true" tabindex="-1"></a><span class="at">## Write to SDO Database</span></span>
+<span id="cb6-70"><a href="#cb6-70" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-71"><a href="#cb6-71" aria-hidden="true" tabindex="-1"></a><span class="at">Finally, the resulting data frame is written to the SDO database in the </span><span class="st">`</span></span>
+<span id="cb6-72"><a href="#cb6-72" aria-hidden="true" tabindex="-1"></a>econ.cost_burden_by_ami_us</span>
+<span id="cb6-73"><a href="#cb6-73" aria-hidden="true" tabindex="-1"></a><span class="st">`</span><span class="at"> table, using vintage 2024 and marking it as the latest data.</span></span>
+<span id="cb6-74"><a href="#cb6-74" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-75"><a href="#cb6-75" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-76"><a href="#cb6-76" aria-hidden="true" tabindex="-1"></a><span class="st">`</span></span>
+<span id="cb6-77"><a href="#cb6-77" aria-hidden="true" tabindex="-1"></a><span class="st">``</span></span>
+<span id="cb6-78"><a href="#cb6-78" aria-hidden="true" tabindex="-1"></a>{</span>
+<span id="cb6-79"><a href="#cb6-79" aria-hidden="true" tabindex="-1"></a>  r</span>
+<span id="cb6-80"><a href="#cb6-80" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb6-81"><a href="#cb6-81" aria-hidden="true" tabindex="-1"></a><span class="co">#| label: write_data</span></span>
+<span id="cb6-82"><a href="#cb6-82" aria-hidden="true" tabindex="-1"></a>sdo_con <span class="ot">&lt;-</span> <span class="fu">connect_to_sdo_db</span>()</span>
+<span id="cb6-83"><a href="#cb6-83" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-84"><a href="#cb6-84" aria-hidden="true" tabindex="-1"></a>DBI<span class="sc">::</span><span class="fu">dbWriteTable</span>(</span>
+<span id="cb6-85"><a href="#cb6-85" aria-hidden="true" tabindex="-1"></a>  sdo_con,</span>
+<span id="cb6-86"><a href="#cb6-86" aria-hidden="true" tabindex="-1"></a>  <span class="fu">Id</span>(<span class="at">schema =</span> <span class="st">"econ"</span>, <span class="at">table =</span> <span class="st">"cost_burden_by_ami_us"</span>),</span>
+<span id="cb6-87"><a href="#cb6-87" aria-hidden="true" tabindex="-1"></a>  hh_by_ten_ami_us,</span>
+<span id="cb6-88"><a href="#cb6-88" aria-hidden="true" tabindex="-1"></a>  <span class="at">overwrite =</span> <span class="cn">TRUE</span></span>
+<span id="cb6-89"><a href="#cb6-89" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </details>
 </div>
 
@@ -936,8 +937,14 @@ div.csl-indent {
 
 
 <div id="quarto-appendix" class="default"><section class="quarto-appendix-contents" role="doc-bibliography" id="quarto-bibliography"><h2 class="anchored quarto-appendix-heading">References</h2><div id="refs" class="references csl-bib-body hanging-indent" data-entry-spacing="0" role="list">
+<div id="ref-ipumsr" class="csl-entry" role="listitem">
+Greg Freedman Ellis, Derek Burk, and Finn Roberts. 2024. <span>“Ipumsr: An r Interface for Downloading, Reading, and Handling IPUMS Data.”</span> <a href="https://tech.popdata.org/ipumsr/">https://tech.popdata.org/ipumsr/</a>.
+</div>
 <div id="ref-joice_measuring_2014" class="csl-entry" role="listitem">
 Joice, Paul. 2014. <span>“Measuring <span>Housing</span> <span>Affordability</span>.”</span> <em>Cityscape: A Journal of Policy Development and Research</em> 16 (1). <a href="https://www.huduser.gov/portal/periodicals/cityscpe/vol16num1/article17.html">https://www.huduser.gov/portal/periodicals/cityscpe/vol16num1/article17.html</a>.
+</div>
+<div id="ref-Ruggles2024" class="csl-entry" role="listitem">
+Ruggles, Steven, Sarah Flood, Matthew Sobek, Daniel Backman, Annie Chen, Grace Cooper, Stephanie Richards, Renae Rodgers, and Megan Schouweiler. 2024. <span>“IPUMS USA: Version 15.0.”</span> Minneapolis, MN: IPUMS. <a href="https://doi.org/10.18128/D010.V15.0">https://doi.org/10.18128/D010.V15.0</a>.
 </div>
 </div></section><section id="footnotes" class="footnotes footnotes-end-of-document" role="doc-endnotes"><h2 class="anchored quarto-appendix-heading">Footnotes</h2>
 

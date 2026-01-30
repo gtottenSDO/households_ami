@@ -3,15 +3,13 @@ title: Households by AMI Forecast
 ---
 
 # Purpose
-// ...existing code...
+
+This script is to generate a forecast of households by AMI based on the most recent three year average at the state level.
+
 ```{r}
 #| label: setup
 source("_common.R")
 ```
-// ...existing code...
-
-This script is to generate a forecast of households by AMI based on the most recent three year average at the state level.
-
 
 # Pull Data from Postgres
 
