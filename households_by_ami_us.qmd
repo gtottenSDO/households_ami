@@ -6,8 +6,6 @@ title: Households by AMI US
 
 This script is used to pull the number of households by AMI in the United States using PUMS data via IPUMS using the `ipumsr` package.
 
-
-// ...existing code...
 ```{r}
 #| label: setup
 source("_common.R")
@@ -18,10 +16,8 @@ library(duckplyr)
 library(furrr)
 
 data_dir <- "data"
-``
-`
-// ...existing code...
 
+```
 
 ## Household Data (IPUMS)
 
@@ -456,13 +452,20 @@ hh_by_ten_ami_us <- future_map_dfr(
 # plan(sequential)  # reset
 
 `
-``
+`
+`
 ## Write to SDO Database
 
-Finally, the resulting data frame is written to the SDO database in the `econ.cost_burden_by_ami_us` table, using vintage 2024 and marking it as the latest data.
+Finally, the resulting data frame is written to the SDO database in the `
+econ.cost_burden_by_ami_us
+` table, using vintage 2024 and marking it as the latest data.
 
 
-```{r}
+`
+``
+{
+  r
+}
 #| label: write_data
 sdo_con <- connect_to_sdo_db()
 
