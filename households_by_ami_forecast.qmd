@@ -41,7 +41,8 @@ con <- sdodemog::connect_to_sdo_db()
 
 hh_by_ten_ami <- pull_db_table(
   schema = "econ",
-  table = "cost_burden_by_ami"
+  table = "cost_burden_by_ami",
+  filter_model_id = TRUE
 )
 
 hh_projections <- pull_db_table(
@@ -59,13 +60,13 @@ xwalk_hna_region <- pull_db_table(
 
 # Process Data
 
-Begin by calculating by year the percentage of all households by tenure, and percentage of households by AMI group within each tenure group.
+First, check that the state totals match the sum of the regions for cost burdened households and total households.
 
 ```{r}
 #| label: check_region_to_state_totals
 
 state_region_check <- hh_by_ten_ami |>
-  filter(year >= 2021) |>
+  # filter(year >= 2021) |>
   mutate(region_type = if_else(region == "0", "State", "Region")) |>
   summarize(
     across(
@@ -84,10 +85,29 @@ state_region_check <- hh_by_ten_ami |>
   pivot_wider(
     names_from = region_type,
     values_from = c(cost_burdened_30, cost_burdened_50, total_hh)
-  )
+  ) |>
+  mutate(
+    check = any(
+      (cost_burdened_30_State != cost_burdened_30_Region),
+      (cost_burdened_50_State != cost_burdened_50_Region),
+      (total_hh_State != total_hh_Region)
+    )
+  ) |>
+  filter(check == TRUE)
 
 
 ```
+
+# Create AMI Allocation Tables
+
+The forecast methodology used is to allocate SDO household projections by the most recent three year average of households by AMI group within tenure from the PUMS data. This was done for simplicity as initially forecasts were run econometrically to determine percentages over time. These tended to be quite stable with relatively little trend in the percentages over time, so the three year average was used instead to simplify the process and reduce potential noise.
+
+The general process is to begin by calculating by year the percentage of all households by tenure, and percentage of households by AMI group within each tenure group, then calculate the most recent three year averages, and then create an allocation table that can be used to allocate SDO household projections^[SDO household estimates do not match ACS households historically, due to differences in methodology, so estimates must also be allocated based on the percentages, along with the household projections]. These are generated with a function that outputs the multiple dataframes into a list. These generate the following tables into the list, which have the following structure:
+
+1. `hh_ami_pct`: historical percentages of households by tenure and AMI group within tenure by year and region. This is used to allocate down households, first by allocating total households into tenure groups, then by tenure groups into AMI groups within each tenure.
+2. `hh_ami_pct_fcst`: the three year average of the most recent percentages in `hh_ami_pct` to be used for forecasting future years.
+3. `hh_ami_allocation_tbl`: a combined table of historical percentages from `hh_ami_pct` and forecasted percentages from `hh_ami_pct_fcst` for all years in the household projections. This is used to allocate the households from the SDO household projections into tenure and AMI groups based on the calculated percentages determined from the PUMS data.
+
 
 ```{r}
 #| label: process_data
@@ -143,6 +163,14 @@ hh_ami_tbls <- hh_by_ten_ami |>
 
 ```
 
+# Allocate Household Projections
+
+Next the household projections from SDO are allocated into AMI groups using the allocation tables created above. This is done first at the region level, then summed to the state level, and finally combined into a single table. This is done by first allocating the region, then summing the regions into the state level totals.
+
+## Region Level Allocation
+
+This is done by filtering the household projections to only total households (household_type_id == 0 and age_group_id == 0), joining to the HNA region crosswalk to get the region for each county, summarizing to get total households by year and region, then joining to the allocation table to get the percentages, and finally calculating the allocated households by multiplying total households by the percentage of households by tenure and percentage of households by AMI group within each tenure.
+
 ```{r}
 
 hh_ami_forecast_region <- hh_projections |>
@@ -174,6 +202,9 @@ hh_ami_forecast_region <- hh_projections |>
 
 ```
 
+## State Level Allocation
+
+Next, the region level allocations are summed to the state level by summing across all regions for each year, tenure, and AMI group. Then the total households by year are calculated, followed by the percentages of households by tenure and by AMI group within each tenure.
 ```{r}
 hh_ami_forecast_state <- hh_ami_forecast_region |>
   summarize(
@@ -196,6 +227,13 @@ hh_ami_forecast <- bind_rows(
   hh_ami_forecast_region
 ) |>
   arrange(year, region, tenure, ami_group)
+```
+
+# Quality Assurance Checks
+Several QA checks are performed to ensure that the allocations are correct.
+
+```{r}
+#| label: qa_checks
 
 # check allocations = total
 hh_ami_forecast |>
@@ -206,7 +244,36 @@ hh_ami_forecast |>
   mutate(check = total_households - hh_allocated) |>
   filter(abs(check) > 1)
 
+# check against existing SDO table
+hh_ami_existing <- pull_db_table(
+  schema = "econ",
+  table = "hh_ami_forecast",
+  filter_model_id = TRUE
+)
+
+# Join and compare tables
+hh_ami_compare <- hh_ami_forecast |>
+  left_join(
+    hh_ami_existing |>
+      select(
+        year,
+        region,
+        tenure,
+        ami_group,
+        hh_allocated_existing = hh_allocated
+      ),
+    by = c("year", "region", "tenure", "ami_group")
+  ) |>
+  mutate(
+    diff = hh_allocated - hh_allocated_existing
+  ) |>
+  filter(abs(diff) > 1)
+
 ```
+
+# Write Data to Postgres and CSV
+
+Finally, the resulting household AMI forecast table is written to the SDO Postgres database and also saved as a CSV file.
 
 ```{r}
 #| label: write_data
@@ -217,9 +284,6 @@ sdodemog::sdo_db_write_table(
   table = "hh_ami_forecast",
   df = hh_ami_forecast,
   vintage = 2024,
-  version = "v3",
-  overwrite = TRUE,
-  use_model_tracking = TRUE,
   latest = TRUE
 )
 
