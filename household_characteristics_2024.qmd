@@ -32,6 +32,10 @@ if (identical(hud_key, "")) {
 
 # load region crosswalk from sdo database
 xwalk_puma_region <- pull_db_table("xwalk", "hna_puma_region")
+
+xwalk_occ_codes <- read_csv("data/occ_codes_xwalk.csv", col_names = c("occ_title", "occ_code"), skip = 1) |> 
+  mutate(occ = as.character(occ_code), .before = 1) |> 
+  select(occ, occ_title)
 ```
 
 ## Household Data (IPUMS)
@@ -44,7 +48,7 @@ First we get a list of all ACS samples, and filter to those with the pattern `us
 #| label: ipums_samples
 
 acs_samples <- get_sample_info("usa") |>
-  filter(str_detect(name, pattern = "us20\\d{2}a")) |>
+  filter(str_detect(name, pattern = "us2024")) |>
   pull(name)
 ```
 
@@ -112,7 +116,7 @@ The output of the IPUMS query is a data frame that includes a record for each ho
 #| label: query_ipums
 
 data_dir <- "data"
-ipums_query <- "00104"
+ipums_query <- "00113"
 ipums_dir <- paste0(data_dir, "/ipums_raw")
 # check if ipums files are in the data folder
 ipums_files <- paste0("usa_", ipums_query, c(".dat.gz", ".xml"))
@@ -172,6 +176,16 @@ if (sdo_drive_check_local(ipums_files, ipums_dir)) {
         "CITIZEN",
         "HHTYPE",
         "HHINCOME",
+        "EMPSTAT",
+        "LABFORCE",
+        "CLASSWKR",
+        "OCC",
+        "OCCSCORE",
+        "IND",
+        "WKSWORK1",
+        "WKSWORK2",
+        "UHRSWORK",
+        "WORKEDYR",
         "INCTOT",
         "INCWAGE",
         "INCBUS00",
@@ -439,28 +453,29 @@ fn_calculate_pums <- function(df) {
       cost_burdened_50 = case_when(
         housing_cost_pct >= 50 & calc_housing_cost ~ TRUE,
         .default = FALSE
-      )
-    ) |>
-    zap_labels()
+      ),
+      full_time = as.numeric(wkswork1) >= 45 & empstat == 1 & as.numeric(uhrswork) >= 35
+    ) |> 
+      mutate(any_employed = empstat == 1, .by = c()) |>
 }
 
 
-# acs_amis_state <- acs_data |>
-#   mutate(region = "0") |>
+acs_amis_state <- acs_data |>
+  mutate(region = "0") |>
+  inner_join(
+    mfi_state,
+    by = c("year")
+  ) |>
+  fn_calculate_pums()
+
+# acs_amis_region <- acs_data |>
 #   inner_join(
-#     mfi_state,
+#     mfi_region,
 #     by = c("year", "region")
 #   ) |>
 #   fn_calculate_pums()
 
-acs_amis_region <- acs_data |>
-  inner_join(
-    mfi_region,
-    by = c("year", "region")
-  ) |>
-  fn_calculate_pums()
-
-rm(acs_data) # deleted to clear memory
+# rm(acs_data) # deleted to clear memory
 ```
 
 ## Calculate AMI percentiles by year
@@ -472,32 +487,39 @@ Next we calculate the AMI percentiles by year. We do this by grouping the data b
 ```{r}
 #| label: calc_ami_percentiles_by_year_region
 
-fn_calc_amis <- function(df, hna_region) {
+fn_calc_amis <- function(
+  df,
+  hna_region = "0",
+  primary_vars = c("ami_group", "tenure"),
+  extra_vars = character(),
+  cost_vars = c("cost_burdened_30", "cost_burdened_50")
+) {
+  base_select <- c(
+    "year",
+    "region",
+    "pernum",
+    "gq",
+    "hhwt",
+    "rent",
+    "owncost",
+    "housing_cost"
+  )
+
+  # ensure inputs are character vectors (NULL -> character(0))
+  primary_vars <- as.character(primary_vars)
+  extra_vars <- as.character(extra_vars)
+  cost_vars <- as.character(cost_vars)
+
+  select_vars <- unique(c(base_select, primary_vars, extra_vars, cost_vars))
+
   srvy <- df |>
     filter(
-      region == hna_region, # filter to region
-      year >= 2005, # remove years without puma data, skip 2000
-      pernum == 1, # one record per household
-      gq %in% c(1, 2) # households and group quarters
+      region == hna_region,
+      year >= 2005,
+      pernum == 1,
+      gq %in% c(1, 2)
     ) |>
-    select(
-      year,
-      region,
-      pernum,
-      gq,
-      ami_group,
-      tenure,
-      hhwt,
-      rent,
-      owncost,
-      housing_cost,
-      cost_burdened_30,
-      cost_burdened_50,
-      matches("repwt[0-9]+")
-    ) |>
-    mutate(
-      tenure = str_to_lower(str_extract(tenure, "Own|Rent"))
-    ) |>
+    select(any_of(select_vars), matches("repwt[0-9]+")) |>
     as_survey_design(
       weight = hhwt,
       repweights = matches("repwt[0-9]+"),
@@ -505,36 +527,153 @@ fn_calc_amis <- function(df, hna_region) {
       mse = TRUE
     )
 
+  # which primary/extra vars actually exist in the survey variables
+  available_vars <- names(srvy$variables)
+  primary_present <- intersect(primary_vars, available_vars)
+  extra_present <- intersect(extra_vars, available_vars)
+
+  # group columns: always include year/region, then the primary vars (those present), then extra vars (present)
+  group_cols <- unique(c("year", "region", primary_present, extra_present))
+  group_cols <- intersect(group_cols, available_vars)
+
+  # build summarize expressions
+  sum_exprs <- list(total_hh = rlang::expr(survey_total()))
+  present_costs <- intersect(cost_vars, available_vars)
+  for (cv in present_costs) {
+    sum_exprs[[cv]] <- rlang::expr(survey_total(!!rlang::sym(cv)))
+  }
+
   cost_burden_df <- srvy |>
-    filter(!is.na(ami_group)) |>
-    group_by(year, region, ami_group, tenure) |>
-    summarize(
-      total_hh = survey_total(),
-      cost_burdened_30 = survey_total(cost_burdened_30),
-      cost_burdened_50 = survey_total(cost_burdened_50),
-      .groups = "drop"
+    filter(
+      !!rlang::sym(ifelse(
+        "ami_group" %in% available_vars,
+        "ami_group",
+        primary_present[1]
+      )) %>%
+        is.na() %>%
+        `!`()
     ) |>
-    mutate(
-      total_hh_ten = sum(total_hh),
-      .by = c(year, region, tenure)
-    ) |>
-    mutate(
-      pct_hh_ten = total_hh / total_hh_ten,
-      pct_cost_burdened_30 = cost_burdened_30 / total_hh,
-      pct_cost_burdened_50 = cost_burdened_50 / total_hh
-    )
+    group_by(!!!rlang::syms(group_cols)) |>
+    summarize(!!!sum_exprs, .groups = "drop")
+
+  # determine grouping for computing totals (year, region, plus denominator primary var if present, plus extra_vars)
+  denom_var <- if (length(primary_present) >= 2) primary_present[2] else NULL
+  total_by_cols <- intersect(
+    c("year", "region", denom_var, extra_present),
+    names(cost_burden_df)
+  )
+
+  if (length(total_by_cols) > 0) {
+    cost_burden_df <- cost_burden_df |>
+      group_by(!!!rlang::syms(total_by_cols)) |>
+      mutate(total_hh_ten = sum(total_hh)) |>
+      ungroup()
+  } else {
+    cost_burden_df <- cost_burden_df |>
+      mutate(total_hh_ten = sum(total_hh))
+  }
+
+  # always compute pct_hh_ten (share of the denominator grouping)
+  cost_burden_df <- cost_burden_df |>
+    mutate(pct_hh_ten = total_hh / total_hh_ten)
+
+  # compute cost-burden percentages only for requested/present cost vars
+  if ("cost_burdened_30" %in% names(cost_burden_df)) {
+    cost_burden_df <- cost_burden_df |>
+      mutate(pct_cost_burdened_30 = cost_burdened_30 / total_hh)
+  }
+  if ("cost_burdened_50" %in% names(cost_burden_df)) {
+    cost_burden_df <- cost_burden_df |>
+      mutate(pct_cost_burdened_50 = cost_burdened_50 / total_hh)
+  }
 
   rm(srvy)
-
-  return(cost_burden_df)
+  cost_burden_df
 }
 
-cost_burden_by_ten_ami_region <- map(
-  as.character(1:4),
-  \(x) fn_calc_amis(acs_amis_region, x),
-  .progress = TRUE
+```
+
+``` {r}
+
+hh_ami_emps <- fn_calc_amis(
+  acs_amis_state,
+  hna_region = "0",
+  primary_vars = c("ami_group"),
+  extra_vars = c("empstat", "empstatd", "classwkr"),
+  cost_vars = NULL
 ) |>
-  bind_rows()
+  mutate(
+    empstat = as_factor(empstat),
+    empstatd = as_factor(empstatd),
+    classwkr = as_factor(classwkr),
+    .after = classwkr
+  )
+
+hh_ami_emps |> 
+  group_by(empstat) |> 
+  summarize(total_hh = sum(total_hh), .groups = "drop") |> 
+  mutate(pct_hh = total_hh / sum(total_hh))
+
+fn_calc_amis(
+  acs_amis_state,
+  hna_region = "0",
+  primary_vars = c("ami_group"),
+  extra_vars = c("age_group"),
+  cost_vars = NULL
+) |> 
+  filter(ami_group == "Less than 30") |>
+  group_by(age_group) |>
+  summarize(total_hh = sum(total_hh), .groups = "drop") |>
+  mutate(pct_hh = total_hh / sum(total_hh))
+
+fn_calc_amis(
+  acs_amis_state,
+  hna_region = "0",
+  primary_vars = c("ami_group"),
+  extra_vars = c("age_group", "empstat"),
+  cost_vars = NULL
+) |> 
+  filter(ami_group == "Less than 30") |>
+  group_by(age_group, empstat) |>
+  summarize(total_hh = sum(total_hh), .groups = "drop") |>
+  group_by(age_group) |>
+  mutate(pct_hh = total_hh / sum(total_hh))
+
+```
+
+  ``` {r}
+
+occ_totals <- acs_amis_state |> 
+  filter(
+    gq %in% c(1, 2)
+  ) |> 
+  count(occ, wt = perwt, name = "occ_total")
+
+hh_ami_occ <- acs_amis_state |> 
+  mutate(full_time = as.numeric(wkswork1) >= 45 & as.numeric(uhrswork) >= 35) |> 
+  filter(
+    gq %in% c(1, 2),
+  pct_mfi <= 0.3,
+  empstat == 1 # employed
+  ) |> 
+    count(full_time, occ, wt = perwt, name = "occ_eli") |> 
+    left_join(occ_totals, by = "occ") |> 
+    mutate(pct_occ = occ_eli / occ_total) |>
+  mutate(occ = as.character(occ)) |>
+  left_join(
+  xwalk_occ_codes
+) |> 
+  relocate(occ_title, .after = occ)
+
+
+
+hh_ami_occ |> 
+  mutate(occ = as.character(occ)) |>
+  left_join(
+  xwalk_occ_codes
+) |> 
+  relocate(occ_title, .after = occ) |>
+  View()
 
 
 ```
