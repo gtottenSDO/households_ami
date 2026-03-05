@@ -11,3 +11,5 @@
 /.quarto/
 /_freeze/
 /.vscode/
+
+**/*.quarto_ipynb
