@@ -641,7 +641,7 @@ fn_calc_amis(
 
 ```
 
-  ``` {r}
+``` {r}
 
 occ_totals <- acs_amis_state |> 
   filter(
