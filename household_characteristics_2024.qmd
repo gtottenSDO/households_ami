@@ -33,8 +33,12 @@ if (identical(hud_key, "")) {
 # load region crosswalk from sdo database
 xwalk_puma_region <- pull_db_table("xwalk", "hna_puma_region")
 
-xwalk_occ_codes <- read_csv("data/occ_codes_xwalk.csv", col_names = c("occ_title", "occ_code"), skip = 1) |> 
-  mutate(occ = as.character(occ_code), .before = 1) |> 
+xwalk_occ_codes <- read_csv(
+  "data/occ_codes_xwalk.csv",
+  col_names = c("occ_title", "occ_code"),
+  skip = 1
+) |>
+  mutate(occ = as.character(occ_code), .before = 1) |>
   select(occ, occ_title)
 ```
 
@@ -435,6 +439,16 @@ fn_calculate_pums <- function(df) {
       ami_percentile = ceiling(pct_mfi * 10) / 10,
       tenure = as_factor(ownershp),
       tenure_detail = as_factor(ownershpd),
+      hispanic = case_when(hispan %in% c(1:4) ~ TRUE, .default = FALSE),
+      race_eth = case_when(
+        hispanic ~ "Hispanic",
+        race == 1 ~ "White alone",
+        race == 2 ~ "Black or African American alone",
+        race == 3 ~ "American Indian or Alaska native alone",
+        race %in% c(4, 5, 6) ~ "Asian or Pacific Islander alone",
+        race %in% c(8, 9) ~ "Two or more races, Non Hispanic",
+        .default = "Other"
+      ),
       housing_cost = case_when(
         ownershp == 2 ~ rentgrs * 12,
         ownershp == 1 ~ owncost * 12,
@@ -454,9 +468,11 @@ fn_calculate_pums <- function(df) {
         housing_cost_pct >= 50 & calc_housing_cost ~ TRUE,
         .default = FALSE
       ),
-      full_time = as.numeric(wkswork1) >= 45 & empstat == 1 & as.numeric(uhrswork) >= 35
-    ) |> 
-      mutate(any_employed = empstat == 1, .by = c()) |>
+      full_time = as.numeric(wkswork1) >= 45 &
+        empstat == 1 &
+        as.numeric(uhrswork) >= 35
+    ) |>
+    mutate(any_employed = empstat == 1, .by = c())
 }
 
 
@@ -609,9 +625,9 @@ hh_ami_emps <- fn_calc_amis(
     .after = classwkr
   )
 
-hh_ami_emps |> 
-  group_by(empstat) |> 
-  summarize(total_hh = sum(total_hh), .groups = "drop") |> 
+hh_ami_emps |>
+  group_by(empstat) |>
+  summarize(total_hh = sum(total_hh), .groups = "drop") |>
   mutate(pct_hh = total_hh / sum(total_hh))
 
 fn_calc_amis(
@@ -620,7 +636,7 @@ fn_calc_amis(
   primary_vars = c("ami_group"),
   extra_vars = c("age_group"),
   cost_vars = NULL
-) |> 
+) |>
   filter(ami_group == "Less than 30") |>
   group_by(age_group) |>
   summarize(total_hh = sum(total_hh), .groups = "drop") |>
@@ -629,49 +645,42 @@ fn_calc_amis(
 fn_calc_amis(
   acs_amis_state,
   hna_region = "0",
-  primary_vars = c("ami_group"),
-  extra_vars = c("age_group", "empstat"),
-  cost_vars = NULL
-) |> 
-  filter(ami_group == "Less than 30") |>
-  group_by(age_group, empstat) |>
-  summarize(total_hh = sum(total_hh), .groups = "drop") |>
-  group_by(age_group) |>
-  mutate(pct_hh = total_hh / sum(total_hh))
-
+  primary_vars = c("tenure"),
+  extra_vars = c("race_eth")
+) |>
+  write_csv("data/cost_burden_race_tenure_24_state.csv")
 ```
 
 ``` {r}
 
-occ_totals <- acs_amis_state |> 
+occ_totals <- acs_amis_state |>
   filter(
     gq %in% c(1, 2)
-  ) |> 
+  ) |>
   count(occ, wt = perwt, name = "occ_total")
 
-hh_ami_occ <- acs_amis_state |> 
-  mutate(full_time = as.numeric(wkswork1) >= 45 & as.numeric(uhrswork) >= 35) |> 
+hh_ami_occ <- acs_amis_state |>
+  mutate(full_time = as.numeric(wkswork1) >= 45 & as.numeric(uhrswork) >= 35) |>
   filter(
     gq %in% c(1, 2),
-  pct_mfi <= 0.3,
-  empstat == 1 # employed
-  ) |> 
-    count(full_time, occ, wt = perwt, name = "occ_eli") |> 
-    left_join(occ_totals, by = "occ") |> 
-    mutate(pct_occ = occ_eli / occ_total) |>
+    pct_mfi <= 0.3,
+    empstat == 1 # employed
+  ) |>
+  count(full_time, occ, wt = perwt, name = "occ_eli") |>
+  left_join(occ_totals, by = "occ") |>
+  mutate(pct_occ = occ_eli / occ_total) |>
   mutate(occ = as.character(occ)) |>
   left_join(
-  xwalk_occ_codes
-) |> 
+    xwalk_occ_codes
+  ) |>
   relocate(occ_title, .after = occ)
 
 
-
-hh_ami_occ |> 
+hh_ami_occ |>
   mutate(occ = as.character(occ)) |>
   left_join(
-  xwalk_occ_codes
-) |> 
+    xwalk_occ_codes
+  ) |>
   relocate(occ_title, .after = occ) |>
   View()
 
