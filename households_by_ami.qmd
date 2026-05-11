@@ -31,7 +31,7 @@ if (identical(hud_key, "")) {
 }
 
 # load region crosswalk from sdo database
-xwalk_puma_region <- pull_db_table("xwalk", "hna_puma_region")
+xwalk_puma_region <- sdotools::sdo_xwalk_get( "hna_puma_region")
 ```
 
 ## Household Data (IPUMS)
@@ -119,7 +119,7 @@ ipums_files <- paste0("usa_", ipums_query, c(".dat.gz", ".xml"))
 ipums_ddi <- file.path(ipums_dir, ipums_files[2])
 
 # Load the IPUMS data from RDS file if it exists
-if (sdo_drive_check_local(ipums_files, ipums_dir)) {
+if (sdotools::sdo_drive_check_local(ipums_files, ipums_dir)) {
   acs_data <- read_ipums_ddi(ipums_ddi) |>
     read_ipums_micro() |>
     mutate(
@@ -146,7 +146,7 @@ if (sdo_drive_check_local(ipums_files, ipums_dir)) {
       project_folder = "households_by_ami"
     )
   })
-  if (sdo_drive_check_local(ipums_files, ipums_dir)) {
+  if (sdotools::sdo_drive_check_local(ipums_files, ipums_dir)) {
     acs_data <- read_ipums_ddi(ipums_ddi) |>
       read_ipums_micro()
   } else {
@@ -439,7 +439,8 @@ fn_calculate_pums <- function(df) {
       cost_burdened_50 = case_when(
         housing_cost_pct >= 50 & calc_housing_cost ~ TRUE,
         .default = FALSE
-      )
+      ),
+      less_than_71k <- if_else(hhincome<=71000, TRUE, FALSE)
     ) |>
     zap_labels()
 }
@@ -459,8 +460,15 @@ acs_amis_region <- acs_data |>
     by = c("year", "region")
   ) |>
   fn_calculate_pums()
-
-rm(acs_data) # deleted to clear memory
+acs_data |>
+  inner_join(
+    mfi_region,
+    by = c("year", "region")
+  ) |>
+    filter(region == "0") |> 
+  fn_calculate_pums() |> 
+  survey_count(less_than_71k)
+# rm(acs_data) # deleted to clear memory
 ```
 
 ## Calculate AMI percentiles by year
@@ -493,6 +501,7 @@ fn_calc_amis <- function(df, hna_region) {
       housing_cost,
       cost_burdened_30,
       cost_burdened_50,
+      less_than_71k,
       matches("repwt[0-9]+")
     ) |>
     mutate(
@@ -536,7 +545,7 @@ cost_burden_by_ten_ami_region <- map(
 ) |>
   bind_rows()
 
-
+state <- fn_calc_amis(acs_amis_region, "0")
 ```
 
 ``` {r}
